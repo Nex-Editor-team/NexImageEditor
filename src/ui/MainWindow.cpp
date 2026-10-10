@@ -6,6 +6,7 @@
 #include "core/Ops.h"
 #include "ui/Dialogs.h"
 #include "ui/Theme.h"
+#include "ui/Widgets.h"
 
 #include <gdk/gdk.h>
 
@@ -93,7 +94,7 @@ MainWindow::MainWindow(Gtk::Application& app) : m_app(app), m_settings(Settings:
     buildMenus(app);
 
     auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    root->append(*Gtk::PopoverMenuBar::create(m_menuModel));
+    root->append(*Gtk::make_managed<Gtk::PopoverMenuBar>(m_menuModel));
     root->append(*buildOptionBar());
 
     auto* center = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
@@ -208,7 +209,7 @@ Gtk::Box* MainWindow::buildOptionBar() {
 
     m_optWand = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     m_optWand->append(*Gtk::make_managed<Gtk::Label>("Tolerance:"));
-    auto* tol = Gtk::make_managed<Gtk::Scale>(Gtk::Orientation::HORIZONTAL, m_tolAdj);
+    auto* tol = makeScale(m_tolAdj);
     tol->set_size_request(160, -1);
     tol->set_draw_value(true);
     tol->set_digits(0);
@@ -225,7 +226,7 @@ Gtk::Box* MainWindow::buildOptionBar() {
 
     m_optBrush = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     m_optBrush->append(*Gtk::make_managed<Gtk::Label>("Size:"));
-    auto* brush = Gtk::make_managed<Gtk::Scale>(Gtk::Orientation::HORIZONTAL, m_brushAdj);
+    auto* brush = makeScale(m_brushAdj);
     brush->set_size_request(160, -1);
     brush->set_draw_value(true);
     brush->set_digits(0);

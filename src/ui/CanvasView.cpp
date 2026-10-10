@@ -85,7 +85,8 @@ void CanvasView::buildWidgets() {
     });
     m_area.add_controller(motion);
 
-    auto scroll = Gtk::EventControllerScroll::create(Gtk::EventControllerScroll::Flags::VERTICAL);
+    auto scroll = Gtk::EventControllerScroll::create();
+    scroll->set_flags(Gtk::EventControllerScroll::Flags::VERTICAL);
     Gtk::EventControllerScroll* scrollRaw = scroll.get();
     scroll->signal_scroll().connect([this, scrollRaw](double, double dy) {
         GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(scrollRaw->gobj()));

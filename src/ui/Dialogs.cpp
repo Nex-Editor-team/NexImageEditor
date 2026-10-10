@@ -1,5 +1,7 @@
 #include "ui/Dialogs.h"
 
+#include "ui/Widgets.h"
+
 #include <cmath>
 #include <memory>
 
@@ -134,7 +136,7 @@ void showParams(Gtk::Window& parent, const std::string& title, const std::vector
     for (size_t i = 0; i < specs.size(); ++i) {
         const ParamSpec& s = specs[i];
         auto adj = Gtk::Adjustment::create(s.value, s.min, s.max, s.step, s.step * 10, 0);
-        auto* scale = Gtk::make_managed<Gtk::Scale>(Gtk::Orientation::HORIZONTAL, adj);
+        auto* scale = makeScale(adj);
         scale->set_draw_value(true);
         scale->set_digits(s.step < 1 ? 1 : 0);
         labeled(box, s.label, *scale);

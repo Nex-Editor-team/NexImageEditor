@@ -1,5 +1,7 @@
 #include "ui/Panels.h"
 
+#include "ui/Widgets.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

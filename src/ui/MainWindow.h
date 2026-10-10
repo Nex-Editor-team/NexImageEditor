@@ -2,6 +2,7 @@
 #include "core/Settings.h"
 #include "tools/Tool.h"
 #include "ui/CanvasView.h"
+#include "ui/Dialogs.h"
 #include "ui/Panels.h"
 
 #include <gtkmm.h>
