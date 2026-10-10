@@ -1,0 +1,21 @@
+Source: neximageeditor
+Section: graphics
+Priority: optional
+Maintainer: hyggshidev@gmail.com
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.16),
+               build-essential,
+               qt6-base-dev,
+               libopencv-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/Hyggshi-OS-Research-Technology/NexImageEditor
+
+Package: neximageeditor
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         qt6-image-formats-plugins
+Description: Lightweight image editor written in Qt6 and C++17
+ NexImageEditor is a fast, lightweight layer-based image editor featuring
+ raster, text, and shape layers, free transform, image adjustments,
+ color tinting, background removal, and OpenCV-powered smart sharpen tools.
