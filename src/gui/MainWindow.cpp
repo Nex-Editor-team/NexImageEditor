@@ -66,6 +66,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // ---- wiring: canvas <-> panels <-> project ----
 
+    connect(m_canvas, &Canvas::imageFilesDropped, this, &MainWindow::importImages);
     connect(m_canvas, &Canvas::selectionChanged, this, &MainWindow::onCanvasSelectionChanged);
     connect(m_canvas, &Canvas::transformLiveChanged, this, [this](Layer*) {
         m_propertiesPanel->refreshFromLayer();
@@ -275,20 +276,43 @@ void MainWindow::onImportImage() {
                                                  "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)");
     if (path.isEmpty()) return;
 
-    ImageBuffer buf = ImageIO::loadImage(path);
-    if (buf.isNull()) {
-        QMessageBox::warning(this, "Import Image", "Could not read this image file.");
-        return;
+    importImages({path}, QPointF(m_project->canvasSize().width() / 2.0,
+                                m_project->canvasSize().height() / 2.0));
+}
+
+void MainWindow::importImages(const QStringList& paths, QPointF position) {
+    QStringList failures;
+    Layer* lastImported = nullptr;
+    bool macroStarted = false;
+    for (const QString& path : paths) {
+        ImageBuffer buf = ImageIO::loadImage(path);
+        if (buf.isNull()) {
+            failures.append(QFileInfo(path).fileName());
+            continue;
+        }
+        // Do not create an empty undo entry when every file fails to load.
+        if (!macroStarted) {
+            m_undoStack->beginMacro(paths.size() > 1 ? "Import Images" : "Import Image");
+            macroStarted = true;
+        }
+        auto layer = std::make_unique<Layer>(LayerType::Raster, QFileInfo(path).baseName());
+        layer->content = buf.image();
+        layer->transform.center = position;
+        lastImported = layer.get();
+        m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(layer)));
     }
-
-    auto layer = std::make_unique<Layer>(LayerType::Raster, QFileInfo(path).baseName());
-    layer->content = buf.image();
-    // Center the imported image on the canvas by default.
-    layer->transform.center = QPointF(m_project->canvasSize().width() / 2.0,
-                                       m_project->canvasSize().height() / 2.0);
-
-    auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
-    m_undoStack->push(cmd);
+    if (macroStarted) {
+        m_undoStack->endMacro();
+        m_canvas->setSelectedLayer(lastImported);
+        m_canvas->setFocus();
+    }
+    if (!failures.isEmpty()) {
+        auto* warning = new QMessageBox(QMessageBox::Warning, "Import Images",
+            "Could not read these image files:\n" + failures.join("\n"), QMessageBox::Ok, this);
+        warning->setTextFormat(Qt::PlainText);
+        warning->setAttribute(Qt::WA_DeleteOnClose);
+        warning->open();
+    }
 }
 
 void MainWindow::onExportImage() {

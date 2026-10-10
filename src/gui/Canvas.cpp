@@ -1,6 +1,13 @@
 #include "Canvas.h"
 #include "../project/Commands.h"
 #include <QPainter>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QFileInfo>
+#include <QUrl>
+#include "../io/ImageIO.h"
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPolygonF>
@@ -9,11 +16,26 @@
 #include <cmath>
 
 namespace {
+// Only accept local image files. Never fetch remote URLs or move source files.
+QStringList droppedImagePaths(const QMimeData* mime) {
+    QStringList paths;
+    if (!mime || !mime->hasUrls()) return paths;
+    for (const QUrl& url : mime->urls()) {
+        if (!url.isLocalFile()) continue;
+        const QString path = url.toLocalFile();
+        if (ImageIO::isSupportedExtension(path) && QFileInfo(path).isFile())
+            paths.append(path);
+    }
+    paths.removeDuplicates();
+    return paths;
+}
+
 constexpr double kHandleRadiusPx = 6.0;      // hit-test radius for box handles, in widget px
 constexpr double kRotateHandleOffsetPx = 28.0; // distance of rotate handle above the box, widget px
 }
 
 Canvas::Canvas(QWidget* parent) : QWidget(parent) {
+    setAcceptDrops(true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAutoFillBackground(false);
@@ -345,4 +367,36 @@ void Canvas::endDrag() {
         m_undoStack->push(cmd);
     }
     m_activeHandle = Transform::TransformHandle::None;
+}
+
+void Canvas::dragEnterEvent(QDragEnterEvent* event) {
+    if (m_project && event->possibleActions().testFlag(Qt::CopyAction)
+        && !droppedImagePaths(event->mimeData()).isEmpty()) {
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void Canvas::dragMoveEvent(QDragMoveEvent* event) {
+    if (m_project && event->possibleActions().testFlag(Qt::CopyAction)
+        && !droppedImagePaths(event->mimeData()).isEmpty()) {
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void Canvas::dropEvent(QDropEvent* event) {
+    const QStringList paths = droppedImagePaths(event->mimeData());
+    if (!m_project || !event->possibleActions().testFlag(Qt::CopyAction) || paths.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    const QPointF position = widgetToCanvas(event->position());
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+    emit imageFilesDropped(paths, position);
 }

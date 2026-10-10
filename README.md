@@ -90,3 +90,18 @@ chmod +x NexImageEditor-*-x86_64.AppImage
 - Artifacts giữ 14 ngày; workflow không tự phát hành GitHub Release.
 - Phiên bản công cụ đóng gói được cố định trong workflow. Khi nâng linuxdeploy,
   cập nhật cả checksum SHA-256 tương ứng.
+
+
+## Kéo thả ảnh vào canvas
+
+Kéo một hoặc nhiều tệp PNG, JPEG, WebP, BMP hoặc TIFF từ trình quản lý tệp
+vào vùng canvas. Mỗi ảnh tạo một layer riêng, tâm ảnh nằm tại vị trí thả
+(có tính zoom/pan); ảnh cuối cùng được chọn để chỉnh sửa ngay. Nhiều ảnh
+trong cùng một lần thả được hoàn tác bằng một lần `Ctrl+Z`, và có thể Redo.
+Tệp gốc không bị di chuyển hay sửa đổi.
+
+Chỉ nhận tệp ảnh cục bộ, không tải URL từ Internet. Thư mục và định dạng
+không hỗ trợ bị bỏ qua. Nếu ảnh lỗi hoặc thiếu plugin giải mã, ứng dụng
+báo tên tệp không đọc được; các ảnh hợp lệ trong lần thả vẫn được nhập.
+`DragDropTests` kiểm tra thả nhiều ảnh, vị trí theo zoom, Undo/Redo, từ chối
+URL/thư mục/văn bản và trường hợp tệp ảnh hỏng.

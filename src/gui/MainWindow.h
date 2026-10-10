@@ -47,6 +47,7 @@ private slots:
     void onResetTransform();
 
 private:
+    void importImages(const QStringList& paths, QPointF position);
     void buildMenusAndToolbar();
     void refreshTitle();
     bool maybeSave();

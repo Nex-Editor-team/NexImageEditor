@@ -93,7 +93,10 @@ if(BUILD_TESTING)
     add_executable(EditorUiTests tests/EditorUiTests.cpp)
     target_link_libraries(EditorUiTests PRIVATE NexEditor)
     add_test(NAME EditorUiTests COMMAND EditorUiTests)
-    set_tests_properties(EditorCoreTests EditorUiTests PROPERTIES
+    add_executable(DragDropTests tests/DragDropTests.cpp)
+    target_link_libraries(DragDropTests PRIVATE NexEditor)
+    add_test(NAME DragDropTests COMMAND DragDropTests)
+    set_tests_properties(EditorCoreTests EditorUiTests DragDropTests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 60)
 endif()

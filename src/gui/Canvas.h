@@ -3,6 +3,11 @@
 #include <QUndoStack>
 #include <QVector>
 #include <QPointF>
+#include <QStringList>
+
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 #include "../project/Project.h"
 #include "../engine/Transform.h"
 
@@ -31,10 +36,14 @@ public:
     void zoomToFit();
 
 signals:
+    void imageFilesDropped(const QStringList& paths, QPointF canvasPosition);
     void selectionChanged(Layer* layer);
     void transformLiveChanged(Layer* layer); // fired continuously while dragging (for Properties panel)
 
 protected:
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
