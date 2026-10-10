@@ -1,95 +1,125 @@
 #pragma once
-#include "core/Document.h"
+#include "core/History.h"
+#include "core/Ops.h"
 #include "tools/Tool.h"
 
-#include <QPointer>
-#include <QUndoStack>
-#include <QWidget>
-#include <optional>
+#include <gtkmm.h>
 
-class QTimer;
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
-// One open document: owns the Document, its undo stack, and the active tool.
-// Implements ToolHost so tools can edit through the undo system.
-class CanvasView : public QWidget, public ToolHost {
-    Q_OBJECT
+struct RectD {
+    double x = 0, y = 0, w = 0, h = 0;
+};
+
+// One open document: canvas, rulers, pan/zoom and the active tool's interaction.
+class CanvasView {
 public:
-    CanvasView(Document doc, ToolOptions* options, QWidget* parent = nullptr);
-    ~CanvasView() override;
+    struct Hooks {
+        std::function<void(CanvasView&)> changed;    // pixels, layers, selection or history changed
+        std::function<void(CanvasView&)> viewMoved;  // zoom, pan or cursor changed
+        std::function<void(Color)> picked;           // eyedropper result
+    };
 
+    CanvasView(Hooks hooks, Document doc);
+    ~CanvasView();
+
+    Gtk::Widget& widget() { return *m_root; }
     Document& document() { return m_doc; }
-    const Document& document() const { return m_doc; }
-    QUndoStack* undoStack() { return &m_undo; }
+    History& history() { return m_hist; }
+    std::string title() const;
+    bool isClean() const { return m_hist.isClean(); }
+    void markClean() { m_hist.markClean(); }
+    IPoint cursor() const { return m_cursor; }
 
+    void setTool(ToolId t, const ToolOptions& o);
+    void setOptions(const ToolOptions& o) { m_opts = o; }
+
+    void refresh();  // full update: pixels, panels and hooks
+    void touch();    // visual-only update during a drag
+    void zoomFit();
+    void zoomBy(double factor, double anchorX, double anchorY);
     double zoom() const { return m_zoom; }
-    void setZoom(double z, const QPointF& anchorWidget);
-    void fitToWindow();
-    void setTool(ToolId id);
-    ToolId toolId() const { return m_toolId; }
-    Tool* tool() { return m_tool.get(); }
 
-    // Undoable document-level edit (layers, size, pixels). fn runs between begin/commit.
-    void editDocument(const QString& name, const std::function<void(Document&)>& fn);
-    // Layer-level helpers.
-    void selectLayer(int index);
-    void addLayer();
-    void duplicateLayer();
-    void deleteLayer();
-    void mergeDownLayer();
-    void moveLayer(int from, int to);
-    void editLayer(int index, const QString& name, const std::function<void(Layer&)>& fn);
-    void flattenImage();
+    DocState snapshot() const { return m_doc.snapshot(); }
+    void recordEdit(const std::string& name, const DocState& before);
+    void undo();
+    void redo();
+    void jumpHistory(size_t applied);
 
-    // ToolHost
-    Document& doc() override { return m_doc; }
-    ToolOptions& options() override { return *m_opts; }
-    void beginEdit(const QString& name) override;
-    void commitEdit() override;
-    void cancelEdit() override;
-    void update() override { QWidget::update(); }
-    void documentChanged() override;
-    void setStatus(const QString& text) override;
-    QString promptText() override;
-    void zoomAt(const QPointF& canvasPos, bool zoomIn) override;
+    bool hasOverlay() const { return m_cropActive || m_transformActive; }
+    void commitOverlay();
+    void cancelOverlay();
 
-signals:
-    void changed();              // layers/selection/size changed; refresh panels
-    void statusMessage(const QString& text);
-    void toolChanged(ToolId id);
-    void zoomChanged(double zoom);
-    void pointerMoved(const QPoint& canvasPos);
+    void selectAll();
+    void deselect();
+    void invertSelection();
+    void deleteSelection();
+    void fillSelection(Color c);
 
-protected:
-    void paintEvent(QPaintEvent*) override;
-    void mousePressEvent(QMouseEvent*) override;
-    void mouseMoveEvent(QMouseEvent*) override;
-    void mouseReleaseEvent(QMouseEvent*) override;
-    void wheelEvent(QWheelEvent*) override;
-    void keyPressEvent(QKeyEvent*) override;
-    void keyReleaseEvent(QKeyEvent*) override;
-    void resizeEvent(QResizeEvent*) override;
-    void leaveEvent(QEvent*) override;
+    void setSpaceHeld(bool v) { m_spaceHeld = v; }
 
 private:
-    QPointF toCanvas(const QPointF& widgetPos) const;
-    QPointF toWidget(const QPointF& canvasPos) const;
-    void clampOrigin();
-    void restoreState(const DocState& s);
+    enum class Drag { None, Brush, Move, Marquee, Lasso, Shape, Gradient, Pan, Crop, Transform, Click };
+    enum class Handle { None, Move, NW, N, NE, E, SE, S, SW, W };
 
+    void buildWidgets();
+    void draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h);
+    void drawRuler(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h, bool horizontal);
+    void drawOverlays(cairo_t* c);
+    void redrawAll();
+    const Surface& composite();
+    Color sampleComposite(int x, int y);
+    PointD toCanvas(double sx, double sy) const { return {(sx - m_panX) / m_zoom, (sy - m_panY) / m_zoom}; }
+    PointD toScreen(PointD p) const { return {p.x * m_zoom + m_panX, p.y * m_zoom + m_panY}; }
+    SelectionPtr combine(const SelectionPtr& add) const;
+    static IRect rectFrom(PointD a, PointD b);
+    Handle handleAt(double sx, double sy) const;
+
+    void onDragBegin(double x, double y, bool shift, bool alt);
+    void onDragUpdate(double dx, double dy);
+    void onDragEnd(double dx, double dy);
+    void clickTool(PointD canvas, PointD screen, bool shift);
+
+    Hooks m_hooks;
     Document m_doc;
-    QUndoStack m_undo;
-    ToolOptions* m_opts;
-    std::unique_ptr<Tool> m_tool;
-    ToolId m_toolId = ToolId::Move;
+    History m_hist;
+    ToolId m_tool = ToolId::Move;
+    ToolOptions m_opts;
+
     double m_zoom = 1.0;
-    QPointF m_origin;  // widget position of canvas pixel (0,0)
-    bool m_panning = false;
-    bool m_spaceDown = false;
-    QPoint m_panLast;
-    std::optional<DocState> m_pending;
-    QString m_pendingName;
-    bool m_initialFit = false;
-    double m_antsPhase = 0;
-    QTimer* m_antsTimer;
-    friend class EditCommand;
+    double m_panX = 0, m_panY = 0;
+    bool m_needsFit = true;
+    bool m_spaceHeld = false;
+    IPoint m_cursor{0, 0};
+
+    Surface m_composite;
+    bool m_compositeDirty = true;
+
+    // Drag state.
+    Drag m_drag = Drag::None;
+    double m_startSX = 0, m_startSY = 0;  // screen start
+    PointD m_last{0, 0};                  // canvas position of the last update
+    double m_panStartX = 0, m_panStartY = 0;
+    DocState m_before;
+    int m_origLayerX = 0, m_origLayerY = 0;
+    bool m_shift = false, m_alt = false;
+    std::vector<IPoint> m_lasso;
+    IRect m_preview{};
+    bool m_hasPreview = false;
+    Handle m_handle = Handle::None;
+    RectD m_startBox{};
+
+    // Overlays.
+    bool m_cropActive = false;
+    IRect m_crop{};
+    bool m_transformActive = false;
+    RectD m_tbox{};
+
+    // Widgets.
+    std::unique_ptr<Gtk::Grid> m_root;
+    Gtk::DrawingArea m_area, m_rulerTop, m_rulerLeft;
+    Gtk::Box m_corner;
 };

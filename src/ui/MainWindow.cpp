@@ -4,709 +4,867 @@
 #include "core/FileIO.h"
 #include "core/Filters.h"
 #include "core/Ops.h"
-#include "core/Settings.h"
-#include "ui/CanvasView.h"
 #include "ui/Dialogs.h"
-#include "ui/Icons.h"
-#include "ui/Panels.h"
+#include "ui/Theme.h"
 
-#include <QAction>
-#include <QObject>
-#include <QActionGroup>
-#include <QApplication>
-#include <QCheckBox>
-#include <QClipboard>
-#include <QCloseEvent>
-#include <QColorDialog>
-#include <QComboBox>
-#include <QDockWidget>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFontComboBox>
-#include <QLabel>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QPushButton>
-#include <QSlider>
-#include <QSpinBox>
-#include <QStatusBar>
-#include <QTabBar>
-#include <QTabWidget>
-#include <QToolBar>
-#include <QPainter>
-#include <QUndoStack>
-#include <QUndoView>
-#include <QFont>
-#include <utility>
+#include <gdk/gdk.h>
+
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
 
 namespace {
-// Adds a menu action with a shortcut and connects it to a slot or functor.
-template <typename Recv, typename Fn>
-QAction* menuAct(QMenu* m, const QString& text, const QKeySequence& key, const Recv* r, Fn fn) {
-    QAction* a = m->addAction(text);
-    a->setShortcut(key);
-    QObject::connect(a, &QAction::triggered, r, fn);
-    return a;
+
+std::string baseName(const std::string& path) {
+    return std::filesystem::path(path).stem().string();
 }
+
+std::string toLower(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("NexImage Editor");
-    resize(1440, 900);
+MainWindow::MainWindow(Gtk::Application& app) : m_app(app), m_settings(Settings::load()) {
+    set_title("NexImageEditor");
+    set_default_size(1400, 860);
+    applyTheme();
 
-    m_tabs = new QTabWidget(this);
-    m_tabs->setDocumentMode(true);
-    m_tabs->setTabsClosable(true);
-    m_tabs->setMovable(true);
-    setCentralWidget(m_tabs);
-    connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int) {
-        CanvasView* v = currentView();
-        m_layers->setView(v);
-        m_props->setView(v);
-        m_history->setView(v);
-        showOptionsFor(v ? v->toolId() : ToolId::Move);
-        updateUi();
+    m_tolAdj = Gtk::Adjustment::create(m_opts.tolerance, 0, 255, 1, 10, 0);
+    m_brushAdj = Gtk::Adjustment::create(m_opts.brushSize, 1, 300, 1, 10, 0);
+    m_fontAdj = Gtk::Adjustment::create(m_opts.fontSize, 6, 400, 1, 10, 0);
+    m_strokeAdj = Gtk::Adjustment::create(m_opts.strokeWidth, 1, 50, 1, 5, 0);
+    m_contig.set_label("Contiguous");
+    m_contig.set_active(true);
+    m_fill.set_label("Fill");
+    m_fill.set_active(true);
+    m_stroke.set_label("Stroke");
+
+    m_color = std::make_unique<ColorPanel>([this](Color fg, Color bg) {
+        m_opts.fg = fg;
+        m_opts.bg = bg;
+        syncTool();
+    });
+    m_layers = std::make_unique<LayersPanel>(LayersPanel::Callbacks{
+        [this](int i) {
+            CanvasView* v = current();
+            if (!v) return;
+            v->document().setActive(i);
+            v->cancelOverlay();
+            v->touch();
+            schedulePanels();
+        },
+        [this](int i, bool vis) {
+            setLayerProperty("Layer Visibility", [i, vis](Layer& l) { l.visible = vis; });
+        },
+        [this](BlendMode m) {
+            setLayerProperty("Blend Mode", [m](Layer& l) { l.blend = m; });
+        },
+        [this](double v) { setOpacityLive(v); },
+        [this](const std::string& action) {
+            if (action == "new") {
+                editDoc("New Layer", [](Document& d) {
+                    d.addLayer("Layer " + std::to_string(d.layers().size() + 1), newSurface(d.width(), d.height()));
+                });
+            } else if (action == "dup") {
+                editDoc("Duplicate Layer", [](Document& d) { d.duplicateLayer(d.activeIndex()); });
+            } else if (action == "delete") {
+                editDoc("Delete Layer", [](Document& d) { d.removeLayer(d.activeIndex()); });
+            } else if (action == "up") {
+                editDoc("Move Layer", [](Document& d) {
+                    const int a = d.activeIndex();
+                    if (a + 1 < int(d.layers().size())) d.moveLayer(a, a + 1);
+                });
+            } else if (action == "down") {
+                editDoc("Move Layer", [](Document& d) {
+                    const int a = d.activeIndex();
+                    if (a > 0) d.moveLayer(a, a - 1);
+                });
+            } else if (action == "merge") {
+                editDoc("Merge Down", [](Document& d) { d.mergeDown(d.activeIndex()); });
+            }
+        }});
+    m_history = std::make_unique<HistoryPanel>([this](size_t applied) {
+        if (CanvasView* v = current()) v->jumpHistory(applied);
     });
 
-    m_layers = new LayersPanel(this);
-    m_props = new PropertiesPanel(this);
-    m_history = new HistoryPanel(this);
-    auto* layersDock = new QDockWidget("Layers", this);
-    layersDock->setWidget(m_layers);
-    auto* propsDock = new QDockWidget("Properties", this);
-    propsDock->setWidget(m_props);
-    auto* historyDock = new QDockWidget("History", this);
-    historyDock->setWidget(m_history);
-    addDockWidget(Qt::RightDockWidgetArea, layersDock);
-    addDockWidget(Qt::RightDockWidgetArea, propsDock);
-    addDockWidget(Qt::RightDockWidgetArea, historyDock);
-    tabifyDockWidget(layersDock, historyDock);
-    layersDock->raise();
+    buildMenus(app);
 
-    m_zoomLabel = new QLabel(this);
-    m_sizeLabel = new QLabel(this);
-    m_posLabel = new QLabel(this);
-    statusBar()->addPermanentWidget(m_posLabel);
-    statusBar()->addPermanentWidget(m_sizeLabel);
-    statusBar()->addPermanentWidget(m_zoomLabel);
+    auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    root->append(*Gtk::PopoverMenuBar::create(m_menuModel));
+    root->append(*buildOptionBar());
 
-    buildToolBar();
-    buildOptionsBar();
-    buildMenus();
-    updateOptionsBar();
-    showOptionsFor(ToolId::Move);
-    updateUi();
-    addDocument(Document(1920, 1080, Qt::white, "Untitled-1"));
-}
+    auto* center = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
+    center->append(*buildToolbox());
+    m_notebook.set_scrollable(true);
+    m_notebook.set_hexpand(true);
+    m_notebook.set_vexpand(true);
+    m_notebook.signal_switch_page().connect([this](Gtk::Widget*, guint) {
+        updateStatus();
+        updateTitle();
+        schedulePanels();
+        if (CanvasView* v = current()) v->setOptions(m_opts);
+    });
+    center->append(m_notebook);
+    center->append(*buildRightPanel());
+    root->append(*center);
+    root->append(*buildStatusBar());
+    set_child(*root);
 
-// ---------------------------------------------------------------- Setup
+    auto keys = Gtk::EventControllerKey::create();
+    Gtk::EventControllerKey* keysRaw = keys.get();
+    keys->signal_key_pressed().connect([this, keysRaw](guint keyval, guint, Gdk::ModifierType) -> bool {
+        GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(keysRaw->gobj()));
+        if (dynamic_cast<Gtk::Editable*>(get_focus())) return false;
+        CanvasView* v = current();
+        if (keyval == GDK_KEY_space) {
+            if (v) v->setSpaceHeld(true);
+            return true;
+        }
+        if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
+            if (v) v->commitOverlay();
+            return true;
+        }
+        if (keyval == GDK_KEY_Escape) {
+            if (v) v->cancelOverlay();
+            return true;
+        }
+        if (st & GDK_CONTROL_MASK) return false;
+        const char* nm = gdk_keyval_name(keyval);
+        if (nm && std::strlen(nm) == 1 && std::isalpha(static_cast<unsigned char>(nm[0]))) {
+            bool found = false;
+            ToolId t = toolFromShortcut(toLower(nm), found);
+            if (found) {
+                selectTool(t);
+                return true;
+            }
+        }
+        return false;
+    }, false);
+    keys->signal_key_released().connect([this](guint keyval, guint, Gdk::ModifierType) {
+        if (keyval == GDK_KEY_space)
+            if (CanvasView* v = current()) v->setSpaceHeld(false);
+    });
+    add_controller(keys);
 
-void MainWindow::buildToolBar() {
-    m_toolBar = addToolBar("Tools");
-    m_toolBar->setOrientation(Qt::Vertical);
-    m_toolBar->setMovable(false);
-    m_toolBar->setIconSize(QSize(22, 22));
-    addToolBar(Qt::LeftToolBarArea, m_toolBar);
-
-    auto* group = new QActionGroup(this);
-    group->setExclusive(true);
-    struct Entry { ToolId id; const char* key; bool sep; };
-    const Entry entries[] = {
-        {ToolId::Move, "V", false},
-        {ToolId::RectMarquee, "M", true},
-        {ToolId::EllipseMarquee, "Shift+M", false},
-        {ToolId::Lasso, "L", false},
-        {ToolId::MagicWand, "W", false},
-        {ToolId::Crop, "C", false},
-        {ToolId::Eyedropper, "I", false},
-        {ToolId::Brush, "B", true},
-        {ToolId::Eraser, "E", false},
-        {ToolId::Bucket, "G", true},
-        {ToolId::Gradient, "Shift+G", false},
-        {ToolId::Text, "T", true},
-        {ToolId::ShapeRect, "U", false},
-        {ToolId::ShapeEllipse, "Shift+U", false},
-        {ToolId::Transform, "Ctrl+T", true},
-        {ToolId::Zoom, "Z", false},
-        {ToolId::Hand, "H", false},
-    };
-    for (const Entry& e : entries) {
-        if (e.sep) m_toolBar->addSeparator();
-        QAction* a = m_toolBar->addAction(Icons::tool(e.id), toolName(e.id));
-        a->setCheckable(true);
-        a->setShortcut(QKeySequence(e.key));
-        a->setToolTip(QString("%1 (%2)").arg(toolName(e.id), e.key));
-        group->addAction(a);
-        m_toolActions.insert(e.id, a);
-        const ToolId id = e.id;
-        connect(a, &QAction::triggered, this, [this, id] {
-            if (CanvasView* v = currentView()) v->setTool(id);
+    signal_close_request().connect([this]() -> bool {
+        if (m_forceClose || !anyDirty()) return false;
+        confirmDiscard(*this, "Some documents have unsaved changes. Close anyway?", [this] {
+            m_forceClose = true;
+            close();
         });
+        return true;
+    }, false);
+
+    selectTool(ToolId::Move);
+    setMessage("Ready. Open an image (Ctrl+O) or create a new document (Ctrl+N).");
+    updateStatus();
+}
+
+// ---- layout ------------------------------------------------------------------
+
+Gtk::Box* MainWindow::buildToolbox() {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    col->add_css_class("toolbox");
+    col->set_margin_start(2);
+    col->set_margin_end(2);
+    auto* grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_column_spacing(1);
+    grid->set_row_spacing(1);
+    Gtk::ToggleButton* first = nullptr;
+    for (int i = 0; i < int(ToolId::Count); ++i) {
+        const ToolInfo& info = toolInfo(ToolId(i));
+        auto* btn = Gtk::make_managed<Gtk::ToggleButton>();
+        btn->set_child(*Gtk::make_managed<Gtk::Label>(info.glyph));
+        btn->set_tooltip_text(std::string(info.name) + "  (" + info.shortcut + ")");
+        if (!first) first = btn;
+        else btn->set_group(*first);
+        const ToolId id = ToolId(i);
+        btn->signal_toggled().connect([this, btn, id] {
+            if (m_toolGuard || !btn->get_active()) return;
+            selectTool(id);
+        });
+        m_toolButtons.push_back(btn);
+        grid->attach(*btn, i % 2, i / 2);
     }
+    col->append(*grid);
+    col->set_vexpand(false);
+    return col;
 }
 
-void MainWindow::buildOptionsBar() {
-    m_optionsBar = addToolBar("Options");
-    m_optionsBar->setMovable(false);
-    addToolBarBreak(Qt::TopToolBarArea);
-    addToolBar(Qt::TopToolBarArea, m_optionsBar);
+Gtk::Box* MainWindow::buildOptionBar() {
+    m_optionBar.add_css_class("optionsbar");
 
-    m_fgBtn = new QPushButton(this);
-    m_bgBtn = new QPushButton(this);
-    for (QPushButton* b : {m_fgBtn, m_bgBtn}) b->setFixedSize(34, 22);
-    auto* swap = new QPushButton("⇄", this);
-    swap->setFixedWidth(28);
-    swap->setToolTip("Swap colours (X)");
-    auto* reset = new QPushButton("D", this);
-    reset->setFixedWidth(28);
-    reset->setToolTip("Default colours (D)");
-    connect(m_fgBtn, &QPushButton::clicked, this, [this] { pickColor(false); });
-    connect(m_bgBtn, &QPushButton::clicked, this, [this] { pickColor(true); });
-    connect(swap, &QPushButton::clicked, this, [this] {
-        std::swap(m_opts.fg, m_opts.bg);
-        updateOptionsBar();
+    m_optSel = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    m_optSel->append(*Gtk::make_managed<Gtk::Label>("Selection:"));
+    m_modeDrop.set_model(Gtk::StringList::create({"New", "Add", "Subtract"}));
+    m_modeDrop.property_selected().signal_changed().connect([this] {
+        m_opts.selectionMode = SelOp(m_modeDrop.get_selected());
+        syncTool();
     });
-    connect(reset, &QPushButton::clicked, this, [this] {
-        m_opts.fg = Qt::black;
-        m_opts.bg = Qt::white;
-        updateOptionsBar();
+    m_optSel->append(m_modeDrop);
+
+    m_optWand = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    m_optWand->append(*Gtk::make_managed<Gtk::Label>("Tolerance:"));
+    auto* tol = Gtk::make_managed<Gtk::Scale>(Gtk::Orientation::HORIZONTAL, m_tolAdj);
+    tol->set_size_request(160, -1);
+    tol->set_draw_value(true);
+    tol->set_digits(0);
+    m_tolAdj->signal_value_changed().connect([this] {
+        m_opts.tolerance = int(m_tolAdj->get_value());
+        syncTool();
     });
-    auto* swapAct = new QAction(this);
-    swapAct->setShortcut(QKeySequence("X"));
-    connect(swapAct, &QAction::triggered, swap, &QPushButton::click);
-    auto* resetAct = new QAction(this);
-    resetAct->setShortcut(QKeySequence("D"));
-    connect(resetAct, &QAction::triggered, reset, &QPushButton::click);
-    addAction(swapAct);
-    addAction(resetAct);
+    m_optWand->append(*tol);
+    m_contig.signal_toggled().connect([this] {
+        m_opts.contiguous = m_contig.get_active();
+        syncTool();
+    });
+    m_optWand->append(m_contig);
 
-    m_brushSize = new QSpinBox(this);
-    m_brushSize->setRange(1, 500);
-    m_brushSize->setSuffix(" px");
-    connect(m_brushSize, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) { m_opts.brushSize = v; });
-    m_hardness = new QSlider(Qt::Horizontal, this);
-    m_hardness->setRange(0, 100);
-    m_hardness->setFixedWidth(120);
-    m_hardness->setToolTip("Hardness");
-    connect(m_hardness, &QSlider::valueChanged, this, [this](int v) { m_opts.hardness = v / 100.0; });
-    m_tolerance = new QSpinBox(this);
-    m_tolerance->setRange(0, 255);
-    m_tolerance->setPrefix("Tolerance ");
-    connect(m_tolerance, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) { m_opts.tolerance = v; });
-    m_contiguous = new QCheckBox("Contiguous", this);
-    connect(m_contiguous, &QCheckBox::toggled, this, [this](bool on) { m_opts.contiguous = on; });
-    m_font = new QFontComboBox(this);
-    m_font->setFixedWidth(160);
-    connect(m_font, &QFontComboBox::currentFontChanged, this, [this](const QFont& f) { m_opts.fontFamily = f.family(); });
-    m_fontSize = new QSpinBox(this);
-    m_fontSize->setRange(4, 800);
-    m_fontSize->setSuffix(" pt");
-    m_fontSize->setValue(m_opts.fontSize);
-    connect(m_fontSize, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) { m_opts.fontSize = v; });
-    m_shapeStroke = new QCheckBox("Stroke only", this);
-    connect(m_shapeStroke, &QCheckBox::toggled, this, [this](bool on) { m_opts.shapeStroke = on; });
-    m_strokeWidth = new QSpinBox(this);
-    m_strokeWidth->setRange(1, 200);
-    m_strokeWidth->setPrefix("Stroke ");
-    m_strokeWidth->setSuffix(" px");
-    connect(m_strokeWidth, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) { m_opts.strokeWidth = v; });
+    m_optBrush = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    m_optBrush->append(*Gtk::make_managed<Gtk::Label>("Size:"));
+    auto* brush = Gtk::make_managed<Gtk::Scale>(Gtk::Orientation::HORIZONTAL, m_brushAdj);
+    brush->set_size_request(160, -1);
+    brush->set_draw_value(true);
+    brush->set_digits(0);
+    m_brushAdj->signal_value_changed().connect([this] {
+        m_opts.brushSize = m_brushAdj->get_value();
+        syncTool();
+    });
+    m_optBrush->append(*brush);
 
-    m_optionsBar->addWidget(m_fgBtn);
-    m_optionsBar->addWidget(m_bgBtn);
-    m_optionsBar->addWidget(swap);
-    m_optionsBar->addWidget(reset);
-    m_optionsBar->addSeparator();
-    m_brushWidgets = {m_brushSize, m_hardness};
-    m_wandWidgets = {m_tolerance, m_contiguous};
-    m_textWidgets = {m_font, m_fontSize};
-    m_shapeWidgets = {m_shapeStroke, m_strokeWidth};
-    for (QWidget* w : QList<QWidget*>{m_brushSize, m_hardness, m_tolerance, m_contiguous, m_font, m_fontSize,
-                                      m_shapeStroke, m_strokeWidth})
-        m_optionsBar->addWidget(w);
+    m_optText = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    m_textEntry.set_text(m_opts.text);
+    m_textEntry.set_width_chars(20);
+    m_textEntry.signal_changed().connect([this] {
+        m_opts.text = m_textEntry.get_text();
+        syncTool();
+    });
+    m_optText->append(*Gtk::make_managed<Gtk::Label>("Text:"));
+    m_optText->append(m_textEntry);
+    auto* fontSize = Gtk::make_managed<Gtk::SpinButton>(m_fontAdj);
+    fontSize->signal_value_changed().connect([this, fontSize] {
+        m_opts.fontSize = int(fontSize->get_value());
+        syncTool();
+    });
+    m_optText->append(*Gtk::make_managed<Gtk::Label>("Size:"));
+    m_optText->append(*fontSize);
+
+    m_optShape = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    m_fill.signal_toggled().connect([this] {
+        m_opts.shapeFill = m_fill.get_active();
+        syncTool();
+    });
+    m_stroke.signal_toggled().connect([this] {
+        m_opts.shapeStroke = m_stroke.get_active();
+        syncTool();
+    });
+    auto* sw = Gtk::make_managed<Gtk::SpinButton>(m_strokeAdj);
+    sw->signal_value_changed().connect([this, sw] {
+        m_opts.strokeWidth = sw->get_value();
+        syncTool();
+    });
+    m_optShape->append(m_fill);
+    m_optShape->append(m_stroke);
+    m_optShape->append(*Gtk::make_managed<Gtk::Label>("Width:"));
+    m_optShape->append(*sw);
+
+    m_optionBar.append(*Gtk::make_managed<Gtk::Label>("Options:"));
+    for (Gtk::Box* b : {m_optSel, m_optWand, m_optBrush, m_optText, m_optShape}) m_optionBar.append(*b);
+    return &m_optionBar;
 }
 
-void MainWindow::showOptionsFor(ToolId id) {
-    const bool isBrush = id == ToolId::Brush || id == ToolId::Eraser;
-    const bool isWand = id == ToolId::MagicWand || id == ToolId::Bucket;
-    const bool isText = id == ToolId::Text;
-    const bool isShape = id == ToolId::ShapeRect || id == ToolId::ShapeEllipse;
-    for (QWidget* w : m_brushWidgets) w->setVisible(isBrush);
-    for (QWidget* w : m_wandWidgets) w->setVisible(isWand);
-    for (QWidget* w : m_textWidgets) w->setVisible(isText);
-    for (QWidget* w : m_shapeWidgets) w->setVisible(isShape);
+Gtk::Box* MainWindow::buildRightPanel() {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    col->set_size_request(300, -1);
+    col->append(m_color->widget());
+    m_panelTabs.set_hexpand(true);
+    m_panelTabs.set_vexpand(true);
+    m_panelTabs.append_page(m_layers->widget(), "Layers");
+    m_panelTabs.append_page(m_history->widget(), "History");
+    col->append(m_panelTabs);
+    return col;
 }
 
-void MainWindow::updateOptionsBar() {
-    auto swatch = [](QPushButton* b, const QColor& c) {
-        b->setStyleSheet(QString("background:%1; border:1px solid #111;").arg(c.name()));
-        b->setToolTip(c.name());
+Gtk::Box* MainWindow::buildStatusBar() {
+    auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 16);
+    bar->add_css_class("statusbar");
+    m_statusMsg.set_hexpand(true);
+    m_statusMsg.set_xalign(0);
+    bar->append(m_statusPos);
+    bar->append(m_statusSize);
+    bar->append(m_statusZoom);
+    bar->append(m_statusMsg);
+    return bar;
+}
+
+void MainWindow::addAction(const std::string& name, std::function<void()> fn, const std::string& accel) {
+    auto action = Gio::SimpleAction::create(name);
+    action->signal_activate().connect([fn](const Glib::VariantBase&) { fn(); });
+    add_action(action);
+    if (!accel.empty()) m_app.set_accels_for_action("win." + name, {accel});
+}
+
+void MainWindow::buildMenus(Gtk::Application& app) {
+    (void)app;
+    auto menu = Gio::Menu::create();
+    auto add = [](const Glib::RefPtr<Gio::Menu>& m, const char* label, const char* action) {
+        m->append(label, action);
     };
-    swatch(m_fgBtn, m_opts.fg);
-    swatch(m_bgBtn, m_opts.bg);
-    m_brushSize->setValue(int(m_opts.brushSize));
-    m_hardness->setValue(int(std::lround(m_opts.hardness * 100)));
-    m_tolerance->setValue(m_opts.tolerance);
-    m_contiguous->setChecked(m_opts.contiguous);
-    m_font->setCurrentFont(QFont(m_opts.fontFamily));
-    m_fontSize->setValue(m_opts.fontSize);
-    m_shapeStroke->setChecked(m_opts.shapeStroke);
-    m_strokeWidth->setValue(int(m_opts.strokeWidth));
+
+    auto file = Gio::Menu::create();
+    add(file, "New…", "win.new");
+    add(file, "Open…", "win.open");
+    add(file, "Open as Layer…", "win.open-layer");
+    add(file, "Save", "win.save");
+    add(file, "Save As…", "win.save-as");
+    add(file, "Export…", "win.export");
+    add(file, "Close", "win.close");
+    menu->append_submenu("File", file);
+
+    auto edit = Gio::Menu::create();
+    add(edit, "Undo", "win.undo");
+    add(edit, "Redo", "win.redo");
+    add(edit, "Copy Layer", "win.copy");
+    add(edit, "Paste as Layer", "win.paste");
+    add(edit, "Fill with Foreground", "win.fill");
+    add(edit, "Delete", "win.delete");
+    add(edit, "Free Transform", "win.transform");
+    menu->append_submenu("Edit", edit);
+
+    auto image = Gio::Menu::create();
+    add(image, "Canvas Size…", "win.canvas-size");
+    add(image, "Image Size…", "win.image-size");
+    add(image, "Crop to Selection", "win.crop-selection");
+    add(image, "Rotate 90° Clockwise", "win.rot-cw");
+    add(image, "Rotate 90° Counter-clockwise", "win.rot-ccw");
+    add(image, "Rotate 180°", "win.rot-180");
+    add(image, "Flip Horizontal", "win.flip-h");
+    add(image, "Flip Vertical", "win.flip-v");
+    add(image, "Flatten Image", "win.flatten");
+    menu->append_submenu("Image", image);
+
+    auto layer = Gio::Menu::create();
+    add(layer, "New Layer", "win.layer-new");
+    add(layer, "Duplicate Layer", "win.layer-dup");
+    add(layer, "Delete Layer", "win.layer-del");
+    add(layer, "Merge Down", "win.layer-merge");
+    add(layer, "Move Up", "win.layer-up");
+    add(layer, "Move Down", "win.layer-down");
+    menu->append_submenu("Layer", layer);
+
+    auto select = Gio::Menu::create();
+    add(select, "All", "win.select-all");
+    add(select, "Deselect", "win.deselect");
+    add(select, "Invert", "win.invert");
+    menu->append_submenu("Select", select);
+
+    auto filters = Gio::Menu::create();
+    add(filters, "Gaussian Blur…", "win.blur");
+    add(filters, "Unsharp Mask…", "win.unsharp");
+    add(filters, "Median…", "win.median");
+    add(filters, "Add Noise…", "win.noise");
+    menu->append_submenu("Filters", filters);
+
+    auto colors = Gio::Menu::create();
+    add(colors, "Invert", "win.adj-invert");
+    add(colors, "Grayscale", "win.adj-gray");
+    add(colors, "Brightness / Contrast…", "win.adj-bc");
+    add(colors, "Hue / Saturation…", "win.adj-hs");
+    add(colors, "Threshold…", "win.adj-threshold");
+    add(colors, "Posterize…", "win.adj-posterize");
+    menu->append_submenu("Colors", colors);
+
+    auto view = Gio::Menu::create();
+    add(view, "Zoom In", "win.zoom-in");
+    add(view, "Zoom Out", "win.zoom-out");
+    add(view, "Fit on Screen", "win.zoom-fit");
+    add(view, "Actual Size (100%)", "win.zoom-100");
+    menu->append_submenu("View", view);
+
+    m_menuModel = menu;
+
+    addAction("new", [this] { newDocument(); }, "<Control>n");
+    addAction("open", [this] { openDialog(); }, "<Control>o");
+    addAction("open-layer", [this] {
+        if (!current()) return;
+        auto dlg = Gtk::FileDialog::create();
+        dlg->open(*this, [this, dlg](const Glib::RefPtr<Gio::AsyncResult>& r) {
+            try {
+                auto f = dlg->open_finish(r);
+                if (f) openAsLayerPath(f->get_path());
+            } catch (const Glib::Error&) {
+            }
+        });
+    });
+    addAction("save", [this] { saveCurrent(false); }, "<Control>s");
+    addAction("save-as", [this] { saveCurrent(true); }, "<Control><Shift>s");
+    addAction("export", [this] { exportCurrent(); }, "<Control><Shift>e");
+    addAction("close", [this] { closeCurrent(); }, "<Control>w");
+
+    addAction("undo", [this] { if (auto* v = current()) v->undo(); }, "<Control>z");
+    addAction("redo", [this] { if (auto* v = current()) v->redo(); }, "<Control><Shift>z");
+    addAction("copy", [this] { copyLayer(); }, "<Control>c");
+    addAction("paste", [this] { pasteLayer(); }, "<Control>v");
+    addAction("fill", [this] { if (auto* v = current()) v->fillSelection(m_opts.fg); }, "<Alt>BackSpace");
+    addAction("delete", [this] { if (auto* v = current()) v->deleteSelection(); }, "Delete");
+    addAction("transform", [this] { selectTool(ToolId::Transform); }, "<Control>t");
+
+    addAction("canvas-size", [this] { sizeDialog(false); });
+    addAction("image-size", [this] { sizeDialog(true); });
+    addAction("crop-selection", [this] {
+        CanvasView* v = current();
+        if (!v || !v->document().selection) return;
+        IRect b = v->document().selection->bounds();
+        if (b.empty()) return;
+        DocState s = v->snapshot();
+        ops::cropDocument(v->document(), b);
+        v->recordEdit("Crop to Selection", s);
+    });
+    addAction("rot-cw", [this] { editDoc("Rotate Canvas", [](Document& d) { ops::rotateCanvas90(d, true); }); });
+    addAction("rot-ccw", [this] { editDoc("Rotate Canvas", [](Document& d) { ops::rotateCanvas90(d, false); }); });
+    addAction("rot-180", [this] { editDoc("Rotate Canvas", [](Document& d) { ops::rotateCanvas180(d); }); });
+    addAction("flip-h", [this] { editDoc("Flip Canvas", [](Document& d) { ops::flipCanvas(d, true); }); });
+    addAction("flip-v", [this] { editDoc("Flip Canvas", [](Document& d) { ops::flipCanvas(d, false); }); });
+    addAction("flatten", [this] { editDoc("Flatten Image", [](Document& d) { d.flattenAll(); }); });
+
+    addAction("layer-new", [this] {
+        editDoc("New Layer", [](Document& d) {
+            d.addLayer("Layer " + std::to_string(d.layers().size() + 1), newSurface(d.width(), d.height()));
+        });
+    }, "<Control><Shift>n");
+    addAction("layer-dup", [this] { editDoc("Duplicate Layer", [](Document& d) { d.duplicateLayer(d.activeIndex()); }); },
+              "<Control>j");
+    addAction("layer-del", [this] { editDoc("Delete Layer", [](Document& d) { d.removeLayer(d.activeIndex()); }); });
+    addAction("layer-merge", [this] { editDoc("Merge Down", [](Document& d) { d.mergeDown(d.activeIndex()); }); },
+              "<Control>e");
+    addAction("layer-up", [this] {
+        editDoc("Move Layer", [](Document& d) {
+            const int a = d.activeIndex();
+            if (a + 1 < int(d.layers().size())) d.moveLayer(a, a + 1);
+        });
+    });
+    addAction("layer-down", [this] {
+        editDoc("Move Layer", [](Document& d) {
+            const int a = d.activeIndex();
+            if (a > 0) d.moveLayer(a, a - 1);
+        });
+    });
+
+    addAction("select-all", [this] { if (auto* v = current()) v->selectAll(); }, "<Control>a");
+    addAction("deselect", [this] { if (auto* v = current()) v->deselect(); }, "<Control>d");
+    addAction("invert", [this] { if (auto* v = current()) v->invertSelection(); }, "<Control>i");
+
+    addAction("blur", [this] {
+        runFilter("Gaussian Blur", {{"Radius", 0.5, 50, 2, 0.5}},
+                  [](const Surface& s, const std::vector<double>& p) { return filters::gaussianBlur(s, p[0]); });
+    });
+    addAction("unsharp", [this] {
+        runFilter("Unsharp Mask", {{"Radius", 0.5, 20, 2, 0.5}, {"Amount %", 0, 500, 100, 1}, {"Threshold", 0, 255, 0, 1}},
+                  [](const Surface& s, const std::vector<double>& p) {
+                      return filters::unsharpMask(s, p[0], p[1], int(p[2]));
+                  });
+    });
+    addAction("median", [this] {
+        runFilter("Median", {{"Radius", 1, 10, 2, 1}},
+                  [](const Surface& s, const std::vector<double>& p) { return filters::median(s, int(p[0])); });
+    });
+    addAction("noise", [this] {
+        runFilter("Add Noise", {{"Amount %", 0, 100, 10, 1}, {"Monochrome", 0, 1, 1, 1}},
+                  [](const Surface& s, const std::vector<double>& p) {
+                      return filters::addNoise(s, p[0], p[1] >= 0.5, 1234u);
+                  });
+    });
+    addAction("adj-invert", [this] { runAdjust("Invert", [](const Surface& s) { return adjust::invert(s); }); });
+    addAction("adj-gray", [this] { runAdjust("Grayscale", [](const Surface& s) { return adjust::grayscale(s); }); });
+    addAction("adj-bc", [this] {
+        runFilter("Brightness / Contrast", {{"Brightness", -100, 100, 0, 1}, {"Contrast", -100, 100, 0, 1}},
+                  [](const Surface& s, const std::vector<double>& p) {
+                      return adjust::brightnessContrast(s, int(p[0]), int(p[1]));
+                  });
+    });
+    addAction("adj-hs", [this] {
+        runFilter("Hue / Saturation",
+                  {{"Hue", -180, 180, 0, 1}, {"Saturation", -100, 100, 0, 1}, {"Lightness", -100, 100, 0, 1}},
+                  [](const Surface& s, const std::vector<double>& p) {
+                      return adjust::hueSaturation(s, int(p[0]), int(p[1]), int(p[2]));
+                  });
+    });
+    addAction("adj-threshold", [this] {
+        runFilter("Threshold", {{"Level", 1, 255, 128, 1}},
+                  [](const Surface& s, const std::vector<double>& p) { return adjust::threshold(s, int(p[0])); });
+    });
+    addAction("adj-posterize", [this] {
+        runFilter("Posterize", {{"Levels", 2, 255, 4, 1}},
+                  [](const Surface& s, const std::vector<double>& p) { return adjust::posterize(s, int(p[0])); });
+    });
+
+    addAction("zoom-in", [this] { if (auto* v = current()) v->zoomBy(1.25, v->widget().get_width() / 2.0, v->widget().get_height() / 2.0); },
+              "<Control>plus");
+    addAction("zoom-out", [this] { if (auto* v = current()) v->zoomBy(0.8, v->widget().get_width() / 2.0, v->widget().get_height() / 2.0); },
+              "<Control>minus");
+    addAction("zoom-fit", [this] { if (auto* v = current()) v->zoomFit(); }, "<Control>0");
+    addAction("zoom-100", [this] {
+        if (auto* v = current()) v->zoomBy(1.0 / v->zoom(), v->widget().get_width() / 2.0, v->widget().get_height() / 2.0);
+    }, "<Control>1");
+
+    addAction("quit", [this] { close(); }, "<Control>q");
 }
 
-void MainWindow::pickColor(bool background) {
-    QColor& target = background ? m_opts.bg : m_opts.fg;
-    QColor c = QColorDialog::getColor(target, this, background ? "Background colour" : "Foreground colour");
-    if (!c.isValid()) return;
-    target = c;
-    updateOptionsBar();
-}
+// ---- documents ---------------------------------------------------------------
 
-void MainWindow::buildMenus() {
-    QMenu* file = menuBar()->addMenu("&File");
-    menuAct(file, "&New…", QKeySequence::New, this, &MainWindow::newDocument);
-    menuAct(file, "&Open…", QKeySequence::Open, this, &MainWindow::openDocuments);
-    m_recentMenu = file->addMenu("Open &Recent");
-    file->addSeparator();
-    m_saveAct = menuAct(file, "&Save Project…", QKeySequence::Save, this, [this] {
-        if (CanvasView* v = currentView()) saveDocument(v, false);
-    });
-    menuAct(file, "Save Project &As…", QKeySequence::SaveAs, this, [this] {
-        if (CanvasView* v = currentView()) saveDocument(v, true);
-    });
-    menuAct(file, "&Export As Image…", QKeySequence("Ctrl+Shift+E"), this, &MainWindow::exportDocument);
-    file->addSeparator();
-    m_closeAct = menuAct(file, "&Close Tab", QKeySequence::Close, this, [this] { closeTab(m_tabs->currentIndex()); });
-    menuAct(file, "E&xit", QKeySequence::Quit, this, &QWidget::close);
-    updateRecentMenu();
-
-    QMenu* edit = menuBar()->addMenu("&Edit");
-    m_undoAct = menuAct(edit, "&Undo", QKeySequence::Undo, this, [this] {
-        if (CanvasView* v = currentView()) v->undoStack()->undo();
-    });
-    m_redoAct = menuAct(edit, "&Redo", QKeySequence::Redo, this, [this] {
-        if (CanvasView* v = currentView()) v->undoStack()->redo();
-    });
-    m_redoAct->setShortcuts({QKeySequence::Redo, QKeySequence("Ctrl+Y")});
-    edit->addSeparator();
-    menuAct(edit, "&Copy", QKeySequence::Copy, this, &MainWindow::copySelection);
-    menuAct(edit, "&Paste as New Layer", QKeySequence::Paste, this, &MainWindow::pasteImage);
-    edit->addSeparator();
-    menuAct(edit, "Select &All", QKeySequence::SelectAll, this, &MainWindow::selectAll);
-    menuAct(edit, "&Deselect", QKeySequence("Ctrl+D"), this, &MainWindow::deselect);
-    menuAct(edit, "&Invert Selection", QKeySequence("Ctrl+Shift+I"), this, &MainWindow::invertSelection);
-    menuAct(edit, "&Fill Selection with Foreground", QKeySequence("Alt+Backspace"), this, &MainWindow::fillSelection);
-
-    QMenu* image = menuBar()->addMenu("&Image");
-    menuAct(image, "Image &Size…", QKeySequence("Ctrl+Alt+I"), this, &MainWindow::imageSize);
-    menuAct(image, "&Canvas Size…", QKeySequence("Ctrl+Alt+C"), this, &MainWindow::canvasSize);
-    QMenu* rot = image->addMenu("&Rotate");
-    rot->addAction("90° Clockwise", this, [this] { rotate(90); });
-    rot->addAction("90° Counter-clockwise", this, [this] { rotate(-90); });
-    rot->addAction("180°", this, [this] { rotate(180); });
-    QMenu* flipMenu = image->addMenu("&Flip");
-    flipMenu->addAction("Horizontal", this, [this] { flip(true); });
-    flipMenu->addAction("Vertical", this, [this] { flip(false); });
-
-    QMenu* layer = menuBar()->addMenu("&Layer");
-    menuAct(layer, "&New Layer", QKeySequence("Ctrl+Shift+N"), this, [this] { if (auto* v = currentView()) v->addLayer(); });
-    menuAct(layer, "&Duplicate Layer", QKeySequence("Ctrl+J"), this, [this] { if (auto* v = currentView()) v->duplicateLayer(); });
-    layer->addAction("&Delete Layer", this, [this] { if (auto* v = currentView()) v->deleteLayer(); });
-    menuAct(layer, "&Merge Down", QKeySequence("Ctrl+E"), this, [this] { if (auto* v = currentView()) v->mergeDownLayer(); });
-    layer->addAction("&Flatten Image", this, [this] { if (auto* v = currentView()) v->flattenImage(); });
-
-    QMenu* adj = menuBar()->addMenu("&Adjustments");
-    adj->addAction("&Brightness / Contrast…", this, [this] { adjustments(0); });
-    adj->addAction("&Hue / Saturation…", this, [this] { adjustments(1); });
-    adj->addAction("&Levels…", this, [this] { adjustments(2); });
-    adj->addAction("&Tint…", this, [this] { adjustments(3); });
-    adj->addSeparator();
-    menuAct(adj, "&Invert", QKeySequence("Ctrl+I"), this, [this] { adjustments(4); });
-    menuAct(adj, "&Grayscale", QKeySequence("Ctrl+Shift+U"), this, [this] { adjustments(5); });
-
-    QMenu* filt = menuBar()->addMenu("F&ilter");
-    filt->addAction("&Gaussian Blur…", this, [this] { filters(0); });
-    filt->addAction("&Unsharp Mask…", this, [this] { filters(1); });
-    filt->addAction("&Median…", this, [this] { filters(2); });
-    filt->addAction("Add &Noise…", this, [this] { filters(3); });
-
-    QMenu* view = menuBar()->addMenu("&View");
-    menuAct(view, "Zoom &In", QKeySequence("Ctrl+="), this, [this] { if (auto* v = currentView()) v->zoomAt(QPointF(v->document().width() / 2.0, v->document().height() / 2.0), true); });
-    menuAct(view, "Zoom &Out", QKeySequence("Ctrl+-"), this, [this] { if (auto* v = currentView()) v->zoomAt(QPointF(v->document().width() / 2.0, v->document().height() / 2.0), false); });
-    menuAct(view, "&Fit on Screen", QKeySequence("Ctrl+0"), this, [this] { if (auto* v = currentView()) v->fitToWindow(); });
-    menuAct(view, "&Actual Pixels", QKeySequence("Ctrl+1"), this, [this] {
-        if (auto* v = currentView()) v->setZoom(1.0, QPointF(v->width() / 2.0, v->height() / 2.0));
-    });
-
-    QMenu* help = menuBar()->addMenu("&Help");
-    help->addAction("&About", this, [this] {
-        QMessageBox::about(this, "About NexImage Editor",
-                           "NexImage Editor 2.0.0\nC++17 / Qt 6 image editor with a Photoshop-style layout.");
-    });
-}
-
-void MainWindow::updateRecentMenu() {
-    m_recentMenu->clear();
-    const QStringList recent = Settings::recentFiles();
-    if (recent.isEmpty()) {
-        m_recentMenu->addAction("(empty)")->setEnabled(false);
-        return;
-    }
-    for (const QString& path : recent)
-        m_recentMenu->addAction(QFileInfo(path).fileName(), this, [this, path] { openPath(path); })
-            ->setToolTip(path);
-}
-
-// ---------------------------------------------------------------- Documents
-
-CanvasView* MainWindow::currentView() const {
-    return qobject_cast<CanvasView*>(m_tabs->currentWidget());
+CanvasView* MainWindow::current() const {
+    const int idx = m_notebook.get_current_page();
+    if (idx < 0 || idx >= int(m_docs.size())) return nullptr;
+    return m_docs[size_t(idx)].get();
 }
 
 CanvasView* MainWindow::addDocument(Document doc) {
-    auto* view = new CanvasView(std::move(doc), &m_opts, m_tabs);
-    const int idx = m_tabs->addTab(view, view->document().name);
-    m_tabs->setCurrentIndex(idx);
-    connect(view, &CanvasView::changed, this, [this, view] {
-        if (view == currentView()) {
-            m_layers->refresh();
-            m_props->refresh();
+    CanvasView::Hooks hooks;
+    hooks.changed = [this](CanvasView& v) {
+        m_notebook.set_tab_label_text(v.widget(), v.title());
+        if (&v == current()) {
+            schedulePanels();
+            updateStatus();
+            updateTitle();
         }
-        updateUi();
-    });
-    connect(view, &CanvasView::statusMessage, statusBar(), [this](const QString& t) { statusBar()->showMessage(t, 5000); });
-    connect(view, &CanvasView::pointerMoved, this, [this, view](const QPoint& p) {
-        if (view == currentView())
-            m_posLabel->setText(QString("X: %1  Y: %2").arg(p.x()).arg(p.y()));
-    });
-    connect(view, &CanvasView::zoomChanged, this, [this, view](double) { if (view == currentView()) updateUi(); });
-    connect(view, &CanvasView::toolChanged, this, [this, view](ToolId id) {
-        if (view != currentView()) return;
-        if (QAction* a = m_toolActions.value(id)) a->setChecked(true);
-        statusBar()->showMessage(view->tool()->hint());
-        showOptionsFor(id);
-    });
-    connect(view->undoStack(), &QUndoStack::cleanChanged, this, [this] { updateTabTitles(); });
-    m_layers->setView(view);
-    m_props->setView(view);
-    m_history->setView(view);
-    updateTabTitles();
-    updateUi();
-    return view;
+    };
+    hooks.viewMoved = [this](CanvasView& v) {
+        if (&v == current()) updateStatus();
+    };
+    hooks.picked = [this](Color c) {
+        m_opts.fg = c;
+        m_color->setColors(m_opts.fg, m_opts.bg);
+        syncTool();
+        setMessage("Foreground colour picked.");
+    };
+    auto view = std::make_unique<CanvasView>(hooks, std::move(doc));
+    CanvasView* raw = view.get();
+    m_docs.push_back(std::move(view));
+    m_notebook.append_page(raw->widget(), raw->title());
+    m_notebook.set_tab_label_text(raw->widget(), raw->title());
+    m_notebook.set_current_page(int(m_docs.size()) - 1);
+    raw->setOptions(m_opts);
+    raw->setTool(m_tool, m_opts);
+    raw->zoomFit();
+    schedulePanels();
+    updateStatus();
+    updateTitle();
+    return raw;
 }
 
 void MainWindow::newDocument() {
-    NewDocumentDialog dlg(this);
-    if (dlg.exec() != QDialog::Accepted) return;
-    addDocument(Document(dlg.width(), dlg.height(), dlg.background(),
-                         QString("Untitled-%1").arg(++m_untitledCount)));
+    showNewDocument(*this, [this](int w, int h, Color bg, const std::string& name) {
+        addDocument(Document(w, h, bg, name.empty() ? "Untitled" : name));
+        setMessage("New document created.");
+    });
 }
 
-void MainWindow::openDocuments() {
-    const QStringList paths = QFileDialog::getOpenFileNames(this, "Open", QString(), FileIO::imageOpenFilter());
-    for (const QString& p : paths) openPath(p);
+void MainWindow::openDialog() {
+    auto dlg = Gtk::FileDialog::create();
+    dlg->set_title("Open image or project");
+    dlg->open(*this, [this, dlg](const Glib::RefPtr<Gio::AsyncResult>& r) {
+        try {
+            auto f = dlg->open_finish(r);
+            if (f) openPath(f->get_path());
+        } catch (const Glib::Error&) {
+            // cancelled
+        }
+    });
 }
 
-void MainWindow::openPath(const QString& path) {
-    Document doc;
-    QString err;
-    if (!FileIO::importImage(path, doc, &err)) {
-        QMessageBox::warning(this, "Open failed", QString("%1\n\n%2").arg(path, err));
-        return;
-    }
-    Settings::addRecent(path);
-    updateRecentMenu();
-    CanvasView* v = addDocument(std::move(doc));
-    if (!v->document().filePath.isEmpty()) v->undoStack()->setClean();
-    statusBar()->showMessage("Opened " + path, 5000);
-}
-
-bool MainWindow::saveDocument(CanvasView* view, bool asNew) {
-    if (!view) return false;
-    Document& d = view->document();
-    QString path = d.filePath;
-    if (path.isEmpty() || asNew || !path.endsWith(".nxe", Qt::CaseInsensitive)) {
-        if (path.isEmpty() || asNew)
-            path = QFileDialog::getSaveFileName(this, "Save Project", d.name + ".nxe", "NexImage project (*.nxe)");
-        if (path.isEmpty()) return false;
-        if (!path.endsWith(".nxe", Qt::CaseInsensitive)) path += ".nxe";
-    }
-    QString err;
-    if (!FileIO::saveProject(d, path, &err)) {
-        QMessageBox::warning(this, "Save failed", err);
-        return false;
-    }
-    d.filePath = path;
-    d.name = QFileInfo(path).completeBaseName();
-    view->undoStack()->setClean();
-    Settings::addRecent(path);
-    updateRecentMenu();
-    updateTabTitles();
-    statusBar()->showMessage("Saved " + path, 5000);
-    return true;
-}
-
-void MainWindow::exportDocument() {
-    CanvasView* view = currentView();
-    if (!view) return;
-    QString path = QFileDialog::getSaveFileName(this, "Export Image", view->document().name + ".png", FileIO::exportFilter());
-    if (path.isEmpty()) return;
-    if (QFileInfo(path).suffix().isEmpty()) path += ".png";
-    QString err;
-    if (!FileIO::exportImage(view->document(), path, 92, &err)) {
-        QMessageBox::warning(this, "Export failed", err);
-        return;
-    }
-    statusBar()->showMessage("Exported " + path, 5000);
-}
-
-bool MainWindow::confirmClose(CanvasView* view) {
-    if (!view || view->undoStack()->isClean()) return true;
-    auto r = QMessageBox::question(this, "Unsaved changes",
-                                   QString("Save changes to %1?").arg(view->document().name),
-                                   QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-    if (r == QMessageBox::Save) return saveDocument(view, false);
-    return r == QMessageBox::Discard;
-}
-
-void MainWindow::closeTab(int index) {
-    auto* view = qobject_cast<CanvasView*>(m_tabs->widget(index));
-    if (!view) return;
-    if (!confirmClose(view)) return;
-    m_tabs->removeTab(index);
-    view->deleteLater();
-    if (m_tabs->count() == 0) {
-        m_layers->setView(nullptr);
-        m_props->setView(nullptr);
-        m_history->setView(nullptr);
-    }
-    updateUi();
-}
-
-void MainWindow::closeEvent(QCloseEvent* e) {
-    while (m_tabs->count() > 0) {
-        auto* v = qobject_cast<CanvasView*>(m_tabs->widget(0));
-        if (!confirmClose(v)) {
-            e->ignore();
+void MainWindow::openPath(const std::string& path) {
+    if (fileio::isProjectPath(path)) {
+        Document d;
+        std::string err;
+        if (!fileio::loadProject(path, d, err)) {
+            showMessage(*this, "Could not open project: " + err);
             return;
         }
-        m_tabs->removeTab(0);
-        v->deleteLater();
-    }
-    e->accept();
-}
-
-void MainWindow::updateTabTitles() {
-    for (int i = 0; i < m_tabs->count(); ++i) {
-        auto* v = qobject_cast<CanvasView*>(m_tabs->widget(i));
-        if (!v) continue;
-        const bool dirty = !v->undoStack()->isClean();
-        m_tabs->setTabText(i, v->document().name + (dirty ? " *" : ""));
-    }
-    setWindowTitle(QString("NexImage Editor"));
-}
-
-void MainWindow::updateUi() {
-    CanvasView* v = currentView();
-    m_undoAct->setEnabled(v && v->undoStack()->canUndo());
-    m_redoAct->setEnabled(v && v->undoStack()->canRedo());
-    if (v) {
-        m_undoAct->setText(v->undoStack()->canUndo() ? "Undo " + v->undoStack()->undoText() : "Undo");
-        m_redoAct->setText(v->undoStack()->canRedo() ? "Redo " + v->undoStack()->redoText() : "Redo");
-        const Document& d = v->document();
-        m_sizeLabel->setText(QString("Doc: %1 × %2 px").arg(d.width()).arg(d.height()));
-        m_zoomLabel->setText(QString("%1%").arg(v->zoom() * 100, 0, 'f', v->zoom() < 1 ? 1 : 0));
-        if (QAction* a = m_toolActions.value(v->toolId())) a->setChecked(true);
+        d.name = baseName(path);
+        addDocument(std::move(d));
     } else {
-        m_sizeLabel->clear();
-        m_zoomLabel->clear();
-        m_posLabel->clear();
+        std::string err;
+        Surface s = fileio::importImage(path, err);
+        if (!s) {
+            showMessage(*this, "Could not open image: " + err);
+            return;
+        }
+        Document d(surfW(s), surfH(s), rgba(0, 0, 0, 0), baseName(path));
+        d.layers()[0].img = s;
+        d.layers()[0].name = "Background";
+        addDocument(std::move(d));
     }
-    m_saveAct->setEnabled(v != nullptr);
-    m_closeAct->setEnabled(v != nullptr);
-    updateTabTitles();
+    m_settings.addRecent(path);
+    m_settings.save();
+    setMessage("Opened " + path);
 }
 
-// ---------------------------------------------------------------- Edit
-
-void MainWindow::copySelection() {
-    CanvasView* v = currentView();
-    if (!v) return;
-    const Document& d = v->document();
-    const Layer* l = d.active();
-    if (!l) return;
-    QRect bounds = d.selection ? d.selection->bounds() : QRect(0, 0, d.width(), d.height());
-    if (bounds.isEmpty()) return;
-    QImage out(bounds.size(), kPremult);
-    out.fill(Qt::transparent);
-    QPainter p(&out);
-    if (d.selection) p.setClipPath(d.selection->clip);  // canvas coordinates, set before translating
-    p.translate(-bounds.topLeft());
-    p.drawImage(l->x, l->y, l->image);
-    p.end();
-    QApplication::clipboard()->setImage(out);
-    statusBar()->showMessage("Copied selection", 3000);
+void MainWindow::openAsLayerPath(const std::string& path) {
+    std::string err;
+    Surface s = fileio::importImage(path, err);
+    if (!s) {
+        showMessage(*this, "Could not open image: " + err);
+        return;
+    }
+    editDoc("Open as Layer", [&](Document& d) { d.addLayer(baseName(path), s, 0, 0); });
 }
 
-void MainWindow::pasteImage() {
-    CanvasView* v = currentView();
+void MainWindow::saveCurrent(bool asNew) {
+    CanvasView* v = current();
     if (!v) return;
-    QImage img = QApplication::clipboard()->image();
-    if (img.isNull()) return;
-    const int x = (v->document().width() - img.width()) / 2;
-    const int y = (v->document().height() - img.height()) / 2;
-    v->editDocument("Paste", [img, x, y](Document& d) {
-        d.addLayer("Pasted Layer", img.convertToFormat(kPremult), x, y);
+    auto save = [this, v](const std::string& path) {
+        std::string err;
+        if (!fileio::saveProject(path, v->document(), err)) {
+            showMessage(*this, "Save failed: " + err);
+            return;
+        }
+        v->document().filePath = path;
+        v->document().name = baseName(path);
+        v->markClean();
+        m_settings.addRecent(path);
+        m_settings.save();
+        v->refresh();
+        setMessage("Saved " + path);
+    };
+    if (!asNew && !v->document().filePath.empty()) {
+        save(v->document().filePath);
+        return;
+    }
+    auto dlg = Gtk::FileDialog::create();
+    dlg->set_title("Save project");
+    dlg->set_initial_name(v->document().name + ".nxe");
+    dlg->save(*this, [this, dlg, save](const Glib::RefPtr<Gio::AsyncResult>& r) {
+        try {
+            auto f = dlg->save_finish(r);
+            if (!f) return;
+            std::string path = f->get_path();
+            if (!fileio::isProjectPath(path)) path += ".nxe";
+            save(path);
+        } catch (const Glib::Error&) {
+        }
     });
 }
 
-void MainWindow::selectAll() {
-    if (CanvasView* v = currentView())
-        v->editDocument("Select All", [](Document& d) {
-            d.selection = Selection::fromMask(Ops::rectMask(QRect(0, 0, d.width(), d.height()), d.width(), d.height()),
-                                              d.width(), d.height());
+void MainWindow::exportCurrent() {
+    CanvasView* v = current();
+    if (!v) return;
+    auto dlg = Gtk::FileDialog::create();
+    dlg->set_title("Export image");
+    dlg->set_initial_name(v->document().name + ".png");
+    dlg->save(*this, [this, dlg, v](const Glib::RefPtr<Gio::AsyncResult>& r) {
+        try {
+            auto f = dlg->save_finish(r);
+            if (!f) return;
+            std::string err;
+            if (!fileio::exportImage(f->get_path(), v->document().flattened(), err))
+                showMessage(*this, "Export failed: " + err);
+            else
+                setMessage("Exported " + f->get_path());
+        } catch (const Glib::Error&) {
+        }
+    });
+}
+
+void MainWindow::closeCurrent() {
+    const int idx = m_notebook.get_current_page();
+    if (idx < 0) return;
+    auto doClose = [this, idx] {
+        m_notebook.remove_page(idx);
+        m_docs.erase(m_docs.begin() + idx);
+        updateStatus();
+        updateTitle();
+        schedulePanels();
+    };
+    CanvasView* v = current();
+    if (v && !v->isClean()) confirmDiscard(*this, "\"" + v->document().name + "\" has unsaved changes.", doClose);
+    else doClose();
+}
+
+void MainWindow::copyLayer() {
+    CanvasView* v = current();
+    if (!v || !v->document().active()) return;
+    const Layer* L = v->document().active();
+    Layer t;
+    t.img = cloneSurface(L->img);
+    t.x = L->x;
+    t.y = L->y;
+    if (const SelectionPtr sel = v->document().selection) {
+        // Keep only the selected pixels: clear everything outside the selection.
+        const int W = v->document().width(), H = v->document().height();
+        std::vector<uint8_t> inv(size_t(W) * size_t(H));
+        for (size_t i = 0; i < inv.size(); ++i) inv[i] = uint8_t(255 - sel->mask[i]);
+        if (SelectionPtr outside = Selection::fromMask(std::move(inv), W, H))
+            ops::applyResult(t, newSurface(L->w(), L->h()), outside.get());
+    }
+    m_clipboard = t.img;
+    m_clipX = t.x;
+    m_clipY = t.y;
+    setMessage("Layer copied.");
+}
+
+void MainWindow::pasteLayer() {
+    if (!m_clipboard) return;
+    editDoc("Paste", [this](Document& d) { d.addLayer("Pasted layer", m_clipboard, m_clipX, m_clipY); });
+}
+
+void MainWindow::editDoc(const std::string& name, const std::function<void(Document&)>& fn) {
+    CanvasView* v = current();
+    if (!v) return;
+    DocState before = v->snapshot();
+    fn(v->document());
+    v->recordEdit(name, before);
+}
+
+void MainWindow::setLayerProperty(const std::string& name, const std::function<void(Layer&)>& fn) {
+    editDoc(name, [&fn](Document& d) {
+        if (Layer* l = d.active()) fn(*l);
+    });
+}
+
+void MainWindow::setOpacityLive(double value) {
+    CanvasView* v = current();
+    Layer* L = v ? v->document().active() : nullptr;
+    if (!L) return;
+    if (!m_opacityPending) {
+        m_opacityPending = true;
+        m_opacityBefore = std::make_shared<DocState>(v->snapshot());
+        m_opacityView = v;
+    }
+    L->opacity = value;
+    v->touch();
+    // Record one history entry once the slider has been idle for a moment.
+    Glib::signal_timeout().connect_once([this] {
+        if (!m_opacityPending) return;
+        m_opacityPending = false;
+        if (m_opacityView) {
+            bool alive = false;
+            for (auto& d : m_docs) alive = alive || d.get() == m_opacityView;
+            if (alive) m_opacityView->recordEdit("Opacity", *m_opacityBefore);
+        }
+    }, 500);
+}
+
+void MainWindow::runAdjust(const std::string& name, std::function<Surface(const Surface&)> fn) {
+    CanvasView* v = current();
+    if (!v) return;
+    Layer* L = v->document().active();
+    if (!L || L->locked) return;
+    DocState before = v->snapshot();
+    ops::applyResult(*L, fn(L->img), v->document().selection.get());
+    v->recordEdit(name, before);
+}
+
+void MainWindow::runFilter(const std::string& name, const std::vector<ParamSpec>& specs, FilterFn fn) {
+    CanvasView* v = current();
+    if (!v) return;
+    Layer* L = v->document().active();
+    if (!L || L->locked) return;
+    const int idx = v->document().activeIndex();
+    Surface base = L->img;
+    SelectionPtr sel = v->document().selection;
+    auto before = std::make_shared<DocState>(v->snapshot());
+    auto apply = [v, idx, base, sel, fn](const std::vector<double>& p) {
+        Layer tmp;
+        tmp.img = base;
+        ops::applyResult(tmp, fn(base, p), sel.get());
+        v->document().layers()[size_t(idx)].img = tmp.img;
+        v->touch();
+    };
+    showParams(
+        *this, name, specs, apply,
+        [v, before, name] { v->recordEdit(name, *before); },
+        [v, idx, base] {
+            v->document().layers()[size_t(idx)].img = base;
+            v->touch();
         });
 }
 
-void MainWindow::deselect() {
-    if (CanvasView* v = currentView())
-        v->editDocument("Deselect", [](Document& d) { d.selection.reset(); });
-}
-
-void MainWindow::invertSelection() {
-    if (CanvasView* v = currentView())
-        v->editDocument("Invert Selection", [](Document& d) {
-            std::vector<uint8_t> m(size_t(d.width()) * size_t(d.height()), 255);
-            if (d.selection)
-                for (size_t i = 0; i < m.size(); ++i) m[i] = uint8_t(255 - d.selection->mask[i]);
-            d.selection = Selection::fromMask(std::move(m), d.width(), d.height());
-        });
-}
-
-void MainWindow::fillSelection() {
-    CanvasView* v = currentView();
+void MainWindow::sizeDialog(bool imageSize) {
+    CanvasView* v = current();
     if (!v) return;
-    const int idx = v->document().activeIndex();
-    const QColor color = m_opts.fg;
-    v->editLayer(idx, "Fill", [this, color](Layer& l) {
-        if (l.locked) return;
-        CanvasView* cv = currentView();
-        auto mask = Ops::layerMaskFromSelection(l, cv ? cv->document().selection.get() : nullptr);
-        Ops::fillWithMask(l, mask, color);
+    const int W = v->document().width(), H = v->document().height();
+    showSize(*this, imageSize, W, H, [this, imageSize](int w, int h, int ox, int oy) {
+        if (imageSize) editDoc("Image Size", [w, h](Document& d) { ops::resizeImage(d, w, h); });
+        else editDoc("Canvas Size", [w, h, ox, oy](Document& d) { ops::resizeCanvas(d, w, h, ox, oy); });
     });
 }
 
-// ---------------------------------------------------------------- Image / layer
+// ---- tools and panels --------------------------------------------------------
 
-void MainWindow::imageSize() {
-    CanvasView* v = currentView();
-    if (!v) return;
-    const Document& d = v->document();
-    SizeDialog dlg(this, "Image Size", d.width(), d.height(), false);
-    if (dlg.exec() != QDialog::Accepted) return;
-    const int w = dlg.width(), h = dlg.height();
-    v->editDocument("Image Size", [w, h](Document& doc) { Ops::resizeImage(doc, w, h); });
+void MainWindow::selectTool(ToolId t) {
+    m_tool = t;
+    m_toolGuard = true;
+    if (size_t(t) < m_toolButtons.size()) m_toolButtons[size_t(t)]->set_active(true);
+    m_toolGuard = false;
+    updateOptionBar();
+    syncTool();
+    setMessage(std::string(toolInfo(t).name) + " tool");
 }
 
-void MainWindow::canvasSize() {
-    CanvasView* v = currentView();
-    if (!v) return;
-    const Document& d = v->document();
-    SizeDialog dlg(this, "Canvas Size", d.width(), d.height(), true);
-    if (dlg.exec() != QDialog::Accepted) return;
-    const int w = dlg.width(), h = dlg.height(), ax = dlg.anchorX(), ay = dlg.anchorY();
-    v->editDocument("Canvas Size", [=](Document& doc) { Ops::resizeCanvas(doc, w, h, ax, ay); });
+void MainWindow::updateOptionBar() {
+    const bool sel = isSelectionTool(m_tool);
+    const bool wand = m_tool == ToolId::MagicWand || m_tool == ToolId::Bucket;
+    const bool brush = m_tool == ToolId::Brush || m_tool == ToolId::Eraser;
+    const bool text = m_tool == ToolId::Text;
+    const bool shape = m_tool == ToolId::Rectangle || m_tool == ToolId::Ellipse;
+    m_optSel->set_visible(sel);
+    m_optWand->set_visible(wand);
+    m_optBrush->set_visible(brush);
+    m_optText->set_visible(text);
+    m_optShape->set_visible(shape);
 }
 
-void MainWindow::rotate(int degrees) {
-    if (CanvasView* v = currentView())
-        v->editDocument("Rotate", [degrees](Document& d) { Ops::rotateDocument(d, degrees); });
+void MainWindow::syncTool() {
+    for (auto& d : m_docs) d->setTool(m_tool, m_opts);
+    if (CanvasView* v = current()) v->setOptions(m_opts);
 }
 
-void MainWindow::flip(bool horizontal) {
-    if (CanvasView* v = currentView())
-        v->editDocument("Flip", [horizontal](Document& d) { Ops::flipDocument(d, horizontal); });
-}
-
-// ---------------------------------------------------------------- Adjustments / filters
-
-void MainWindow::applyAdjustment(const QString& name, const std::function<void(Pixels&)>& fn) {
-    CanvasView* v = currentView();
-    if (!v) return;
-    const int idx = v->document().activeIndex();
-    v->editLayer(idx, name, [this, &fn](Layer& l) {
-        if (l.locked) return;
-        CanvasView* cv = currentView();
-        Ops::applyPixelFn(l, cv ? cv->document().selection.get() : nullptr, fn);
+void MainWindow::schedulePanels() {
+    if (m_panelsPending) return;
+    m_panelsPending = true;
+    // Deferred: rebuilding a list from inside one of its own row callbacks is unsafe.
+    Glib::signal_idle().connect_once([this] {
+        m_panelsPending = false;
+        refreshPanels();
     });
 }
 
-void MainWindow::applyFilter(const FilterSpec& spec) {
-    CanvasView* v = currentView();
+void MainWindow::refreshPanels() {
+    CanvasView* v = current();
     if (!v) return;
-    const Layer* l = v->document().active();
-    if (!l || l->locked) return;
-    FilterDialog dlg(this, spec, l->image);
-    if (dlg.exec() != QDialog::Accepted) return;
-    const std::vector<int> vals = dlg.values();
-    applyAdjustment(spec.title, [&spec, vals](Pixels& p) { spec.apply(p, vals); });
+    m_layers->rebuild(v->document());
+    m_history->rebuild(v->history());
 }
 
-void MainWindow::adjustments(int which) {
-    CanvasView* v = currentView();
-    if (!v) return;
-    switch (which) {
-    case 0:
-        applyFilter({"Brightness / Contrast",
-                     {{"Brightness", -100, 100, 0}, {"Contrast", -100, 100, 0}},
-                     [](Pixels& p, const std::vector<int>& a) { Adjust::brightnessContrast(p, a[0], a[1]); }});
-        break;
-    case 1:
-        applyFilter({"Hue / Saturation",
-                     {{"Hue", -180, 180, 0}, {"Saturation", -100, 100, 0}, {"Lightness", -100, 100, 0}},
-                     [](Pixels& p, const std::vector<int>& a) { Adjust::hueSaturation(p, a[0], a[1], a[2]); }});
-        break;
-    case 2:
-        applyFilter({"Levels",
-                     {{"Input black", 0, 254, 0}, {"Input white", 1, 255, 255}, {"Gamma (×100)", 10, 1000, 100}},
-                     [](Pixels& p, const std::vector<int>& a) { Adjust::levels(p, a[0], a[1], a[2] / 100.0); }});
-        break;
-    case 3: {
-        const QColor c = m_opts.fg;
-        applyFilter({"Tint",
-                     {{"Amount", 0, 100, 50}},
-                     [c](Pixels& p, const std::vector<int>& a) { Adjust::tint(p, c, a[0] / 100.0); }});
-        break;
+void MainWindow::updateStatus() {
+    CanvasView* v = current();
+    if (!v) {
+        m_statusPos.set_text("");
+        m_statusSize.set_text("");
+        m_statusZoom.set_text("");
+        return;
     }
-    case 4:
-        applyAdjustment("Invert", [](Pixels& p) { Adjust::invert(p); });
-        break;
-    case 5:
-        applyAdjustment("Grayscale", [](Pixels& p) { Adjust::grayscale(p); });
-        break;
-    }
+    const IPoint c = v->cursor();
+    m_statusPos.set_text("X: " + std::to_string(c.x) + "  Y: " + std::to_string(c.y));
+    m_statusSize.set_text("Doc: " + std::to_string(v->document().width()) + " × " +
+                          std::to_string(v->document().height()) + " px");
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "Zoom: %.0f%%", v->zoom() * 100);
+    m_statusZoom.set_text(buf);
 }
 
-void MainWindow::filters(int which) {
-    switch (which) {
-    case 0:
-        applyFilter({"Gaussian Blur", {{"Radius (×0.1 px)", 1, 300, 20}},
-                     [](Pixels& p, const std::vector<int>& a) { Filters::gaussianBlur(p, a[0] / 10.0); }});
-        break;
-    case 1:
-        applyFilter({"Unsharp Mask",
-                     {{"Radius (×0.1 px)", 1, 300, 10}, {"Amount (%)", 0, 500, 100}, {"Threshold", 0, 255, 0}},
-                     [](Pixels& p, const std::vector<int>& a) { Filters::unsharpMask(p, a[0] / 10.0, a[1] / 100.0, a[2]); }});
-        break;
-    case 2:
-        applyFilter({"Median", {{"Radius (px)", 1, 10, 1}},
-                     [](Pixels& p, const std::vector<int>& a) { Filters::median(p, a[0]); }});
-        break;
-    case 3:
-        applyFilter({"Add Noise",
-                     {{"Amount", 0, 100, 10}, {"Monochrome (0/1)", 0, 1, 1}},
-                     [](Pixels& p, const std::vector<int>& a) { Filters::addNoise(p, a[0] / 10.0 * 4.0, a[1] != 0); }});
-        break;
-    }
+void MainWindow::updateTitle() {
+    CanvasView* v = current();
+    set_title(v ? "NexImageEditor — " + v->title() : "NexImageEditor");
+}
+
+void MainWindow::setMessage(const std::string& msg) { m_statusMsg.set_text(msg); }
+
+bool MainWindow::anyDirty() const {
+    for (const auto& d : m_docs)
+        if (!d->isClean()) return true;
+    return false;
 }

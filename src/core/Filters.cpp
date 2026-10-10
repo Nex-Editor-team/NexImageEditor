@@ -1,105 +1,105 @@
 #include "core/Filters.h"
 
+#include "core/Pixels.h"
+
 #include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
 
+namespace filters {
 namespace {
-inline uint8_t clamp8(double v) { return uint8_t(std::clamp(int(std::lround(v)), 0, 255)); }
 
-std::vector<double> gaussKernel(double sigma, int& radius) {
-    radius = std::max(1, int(std::ceil(sigma * 3)));
-    std::vector<double> k(size_t(2 * radius + 1));
+uint8_t clamp8(double v) { return uint8_t(std::clamp(std::lround(v), 0L, 255L)); }
+
+// Separable convolution on non-premultiplied RGBA with edge clamping.
+Pixels convolve(const Pixels& in, const std::vector<double>& k) {
+    const int r = int(k.size() / 2);
+    Pixels tmp = in, out = in;
+    for (int y = 0; y < in.h; ++y)
+        for (int x = 0; x < in.w; ++x)
+            for (int c = 0; c < 4; ++c) {
+                double acc = 0;
+                for (int i = -r; i <= r; ++i)
+                    acc += k[size_t(i + r)] * in.px(std::clamp(x + i, 0, in.w - 1), y)[c];
+                tmp.px(x, y)[c] = clamp8(acc);
+            }
+    for (int y = 0; y < in.h; ++y)
+        for (int x = 0; x < in.w; ++x)
+            for (int c = 0; c < 4; ++c) {
+                double acc = 0;
+                for (int i = -r; i <= r; ++i)
+                    acc += k[size_t(i + r)] * tmp.px(x, std::clamp(y + i, 0, in.h - 1))[c];
+                out.px(x, y)[c] = clamp8(acc);
+            }
+    return out;
+}
+
+std::vector<double> gaussKernel(double sigma) {
+    if (sigma <= 0) return {1.0};
+    const int r = std::max(1, int(std::ceil(sigma * 3)));
+    std::vector<double> k(size_t(2 * r + 1));
     double sum = 0;
-    for (int i = -radius; i <= radius; ++i) {
-        k[size_t(i + radius)] = std::exp(-(i * i) / (2 * sigma * sigma));
-        sum += k[size_t(i + radius)];
+    for (int i = -r; i <= r; ++i) {
+        k[size_t(i + r)] = std::exp(-(i * i) / (2 * sigma * sigma));
+        sum += k[size_t(i + r)];
     }
     for (double& v : k) v /= sum;
     return k;
 }
 
-// Separable blur on RGB channels; alpha is handled as a channel too (premult not needed for
-// the small radii used here).
-std::vector<uint8_t> blurBuffer(const Pixels& p, double sigma) {
-    int r = 0;
-    auto k = gaussKernel(sigma, r);
-    const int W = p.w, H = p.h;
-    std::vector<double> tmp(size_t(W) * H * 4);
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-            for (int c = 0; c < 4; ++c) {
-                double acc = 0;
-                for (int i = -r; i <= r; ++i) {
-                    int sx = std::clamp(x + i, 0, W - 1);
-                    acc += k[size_t(i + r)] * p.d[(size_t(y) * W + sx) * 4 + c];
-                }
-                tmp[(size_t(y) * W + x) * 4 + c] = acc;
-            }
-    std::vector<uint8_t> out(p.d.size());
-    for (int y = 0; y < H; ++y)
-        for (int x = 0; x < W; ++x)
-            for (int c = 0; c < 4; ++c) {
-                double acc = 0;
-                for (int i = -r; i <= r; ++i) {
-                    int sy = std::clamp(y + i, 0, H - 1);
-                    acc += k[size_t(i + r)] * tmp[(size_t(sy) * W + x) * 4 + c];
-                }
-                out[(size_t(y) * W + x) * 4 + c] = clamp8(acc);
-            }
-    return out;
-}
 }  // namespace
 
-namespace Filters {
-
-void gaussianBlur(Pixels& p, double radius) {
-    if (radius <= 0 || p.w == 0) return;
-    p.d = blurBuffer(p, radius);
+Surface gaussianBlur(const Surface& src, double radius) {
+    Pixels p = toPixels(src);
+    return fromPixels(convolve(p, gaussKernel(radius)));
 }
 
-void unsharpMask(Pixels& p, double radius, double amount, int threshold) {
-    if (radius <= 0 || amount <= 0 || p.w == 0) return;
-    auto blurred = blurBuffer(p, radius);
-    for (size_t i = 0; i < p.d.size(); i += 4)
+Surface unsharpMask(const Surface& src, double radius, double amount, int threshold) {
+    Pixels orig = toPixels(src);
+    Pixels blur = convolve(orig, gaussKernel(radius));
+    const double a = amount / 100.0;
+    for (size_t i = 0; i < orig.d.size(); i += 4)
         for (int c = 0; c < 3; ++c) {
-            int diff = int(p.d[i + c]) - int(blurred[i + c]);
+            int diff = int(orig.d[i + c]) - int(blur.d[i + c]);
             if (std::abs(diff) < threshold) continue;
-            p.d[i + c] = clamp8(p.d[i + c] + diff * amount);
+            orig.d[i + c] = clamp8(orig.d[i + c] + a * diff);
         }
+    return fromPixels(orig);
 }
 
-void median(Pixels& p, int radius) {
-    if (radius <= 0 || p.w == 0) return;
-    Pixels src = p;
-    std::vector<uint8_t> window;
-    for (int y = 0; y < p.h; ++y)
-        for (int x = 0; x < p.w; ++x)
+Surface median(const Surface& src, int radius) {
+    Pixels in = toPixels(src);
+    Pixels out = in;
+    std::vector<uint8_t> win;
+    win.reserve(size_t((2 * radius + 1) * (2 * radius + 1)));
+    for (int y = 0; y < in.h; ++y)
+        for (int x = 0; x < in.w; ++x)
             for (int c = 0; c < 4; ++c) {
-                window.clear();
-                for (int dy = -radius; dy <= radius; ++dy)
-                    for (int dx = -radius; dx <= radius; ++dx) {
-                        int sx = std::clamp(x + dx, 0, p.w - 1), sy = std::clamp(y + dy, 0, p.h - 1);
-                        window.push_back(src.px(sx, sy)[c]);
-                    }
-                auto mid = window.begin() + window.size() / 2;
-                std::nth_element(window.begin(), mid, window.end());
-                p.px(x, y)[c] = *mid;
+                win.clear();
+                for (int j = -radius; j <= radius; ++j)
+                    for (int i = -radius; i <= radius; ++i)
+                        win.push_back(in.px(std::clamp(x + i, 0, in.w - 1), std::clamp(y + j, 0, in.h - 1))[c]);
+                auto mid = win.begin() + win.size() / 2;
+                std::nth_element(win.begin(), mid, win.end());
+                out.px(x, y)[c] = *mid;
             }
+    return fromPixels(out);
 }
 
-void addNoise(Pixels& p, double amount, bool monochrome, unsigned seed) {
+Surface addNoise(const Surface& src, double amount, bool monochrome, unsigned seed) {
+    Pixels p = toPixels(src);
     std::mt19937 rng(seed);
-    std::normal_distribution<double> dist(0.0, amount);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    const double span = amount / 100.0 * 255.0;
     for (size_t i = 0; i < p.d.size(); i += 4) {
-        if (monochrome) {
-            double n = dist(rng);
-            for (int c = 0; c < 3; ++c) p.d[i + c] = clamp8(p.d[i + c] + n);
-        } else {
-            for (int c = 0; c < 3; ++c) p.d[i + c] = clamp8(p.d[i + c] + dist(rng));
+        const double mono = dist(rng) * span;
+        for (int c = 0; c < 3; ++c) {
+            double n = monochrome ? mono : dist(rng) * span;
+            p.d[i + c] = clamp8(p.d[i + c] + n);
         }
     }
+    return fromPixels(p);
 }
 
-}  // namespace Filters
+}  // namespace filters

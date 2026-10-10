@@ -1,57 +1,40 @@
 #pragma once
 #include "core/Document.h"
-#include "core/Pixels.h"
-#include "core/Selection.h"
 
-#include <QFont>
-#include <QPainterPath>
-#include <QPolygonF>
-#include <QTransform>
-#include <functional>
+#include <cairo.h>
 
-namespace Ops {
+#include <vector>
 
-// Applies fn to the layer's pixels inside the selection (all pixels if sel is null),
-// blending by selection coverage so feathered/antialiased edges work.
-void applyPixelFn(Layer& layer, const Selection* sel, const std::function<void(Pixels&)>& fn);
+// Selection builders. Masks are canvas-sized.
+namespace ops {
+SelectionPtr selRect(IRect r, int w, int h);
+SelectionPtr selEllipse(IRect r, int w, int h);
+SelectionPtr selPolygon(const std::vector<IPoint>& pts, int w, int h);
+SelectionPtr selMagicWand(const Surface& flat, IPoint seed, int tolerance, bool contiguous);
 
-// Canvas-space masks (w*h, 0..255).
-std::vector<uint8_t> rectMask(const QRect& r, int w, int h);
-std::vector<uint8_t> ellipseMask(const QRect& r, int w, int h);
-std::vector<uint8_t> polygonMask(const QPolygonF& poly, int w, int h);
+// Pixel edits on a layer. `sel` (canvas-sized, may be null) clips every edit.
+void brushStroke(Layer& L, const Selection* sel, PointD a, PointD b, double size, Color c, bool erase);
+void bucketFill(Layer& L, const Selection* sel, IPoint canvasSeed, Color c, int tolerance, bool contiguous);
+void gradientFill(Layer& L, const Selection* sel, PointD a, PointD b, Color c1, Color c2);
+void fillSelection(Layer& L, const Selection* sel, Color c);
+void clearSelection(Layer& L, const Selection* sel);
+void drawShape(Layer& L, const Selection* sel, IRect r, bool ellipse, bool fill, Color fillColor,
+               bool stroke, Color strokeColor, double strokeWidth);
+void drawText(Layer& L, const Selection* sel, IPoint at, const std::string& text, const std::string& family,
+              int sizePx, Color c);
+void moveSelectedPixels(Layer& L, const Selection& sel, int dx, int dy);
 
-// Flood fill / magic wand on the given image (layer coords). Returns a mask in layer coords.
-std::vector<uint8_t> floodMask(const QImage& img, QPoint seed, int tolerance, bool contiguous);
+// Applies a canvas-space affine matrix to one layer. The layer's image is replaced by its bounding box.
+void transformLayer(Layer& L, const cairo_matrix_t& canvasMatrix);
 
-// Painting. Coordinates are canvas coordinates; they are clipped to the selection.
-void strokeBrush(Layer& layer, const Selection* sel, const QPointF& a, const QPointF& b,
-                 double size, const QColor& color, double hardness, bool erase);
-// layerMask: layer-image sized coverage (0..255), see layerMaskFromSelection().
-void fillWithMask(Layer& layer, const std::vector<uint8_t>& layerMask, const QColor& color);
-void fillGradient(Layer& layer, const Selection* sel, const QPointF& from, const QPointF& to,
-                  const QColor& c1, const QColor& c2);
+// Canvas-level operations (all layers).
+void cropDocument(Document& d, IRect r);
+void resizeCanvas(Document& d, int w, int h, int offsetX, int offsetY);
+void resizeImage(Document& d, int w, int h);
+void rotateCanvas90(Document& d, bool clockwise);
+void rotateCanvas180(Document& d);
+void flipCanvas(Document& d, bool horizontal);
 
-// Converts a canvas-space selection into layer-image coordinates (nullptr sel = all opaque).
-std::vector<uint8_t> layerMaskFromSelection(const Layer& layer, const Selection* sel);
-void drawShape(Layer& layer, const Selection* sel, const QRectF& rect, bool ellipse,
-               const QColor& fill, const QColor& stroke, double strokeW);
-void drawText(Layer& layer, const Selection* sel, const QPointF& pos, const QString& text,
-              const QFont& font, const QColor& color);
-
-// Moves the selected pixels of a layer by (dx, dy) in place (cuts and pastes).
-void moveSelectedPixels(Layer& layer, const Selection& sel, int dx, int dy);
-
-// Transforms: layer gets a new image covering the transformed bounds.
-void transformLayer(Layer& layer, const QTransform& t);
-QRect transformedBounds(const QRect& r, const QTransform& t);
-
-// Document-level.
-void cropDocument(Document& doc, const QRect& r);
-void resizeImage(Document& doc, int w, int h);
-void resizeCanvas(Document& doc, int w, int h, int anchorX, int anchorY);  // anchor 0..2
-void rotateDocument(Document& doc, int degrees);  // 90, -90, 180
-void flipDocument(Document& doc, bool horizontal);
-
-QImage cropImage(const QImage& img, const QRect& r);
-
-}  // namespace Ops
+// Blends `result` (layer-sized) into the layer, keeping pixels outside the selection.
+void applyResult(Layer& L, const Surface& result, const Selection* sel);
+}

@@ -1,31 +1,30 @@
 #pragma once
+#include "core/Color.h"
 #include "core/Layer.h"
 #include "core/Selection.h"
 
-#include <QString>
-#include <QStringList>
+#include <string>
 #include <vector>
 
-// Snapshot of everything an undoable edit can change.
+// Everything an undoable edit can change. Layer images are shared, so snapshots are cheap.
 struct DocState {
     std::vector<Layer> layers;
-    int activeLayer = 0;
+    int active = 0;
     SelectionPtr selection;
-    int canvasW = 0;
-    int canvasH = 0;
+    int w = 0;
+    int h = 0;
 };
 
 class Document {
 public:
-    Document(int w = 1920, int h = 1080, const QColor& bg = Qt::white, const QString& name = "Untitled");
+    Document(int w = 1920, int h = 1080, Color bg = rgba(255, 255, 255), std::string name = "Untitled");
 
     int width() const { return m_w; }
     int height() const { return m_h; }
     void setSize(int w, int h) { m_w = w; m_h = h; }
 
-    QString name;
-    QString filePath;
-    bool dirty = false;
+    std::string name;
+    std::string filePath;
 
     std::vector<Layer>& layers() { return m_layers; }
     const std::vector<Layer>& layers() const { return m_layers; }
@@ -34,8 +33,7 @@ public:
     Layer* active();
     const Layer* active() const;
 
-    // Layer management (indices refer to m_layers; the active index is kept in sync).
-    Layer& addLayer(const QString& name, const QImage& img, int x = 0, int y = 0);
+    int addLayer(const std::string& name, const Surface& img, int x = 0, int y = 0);
     void removeLayer(int i);
     void moveLayer(int from, int to);
     void duplicateLayer(int i);
@@ -47,8 +45,7 @@ public:
     DocState snapshot() const;
     void restore(const DocState& s);
 
-    QImage composite() const;  // full canvas, premultiplied
-    QImage flattenedVisible() const;
+    Surface flattened() const;  // visible layers composited, canvas-sized
 
 private:
     int m_w, m_h;

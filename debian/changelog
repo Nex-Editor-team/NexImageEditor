@@ -1,18 +1,14 @@
-neximageeditor (2.0.0-1) unstable; urgency=medium
+neximageeditor (3.0.0-1) unstable; urgency=medium
 
-  * Rewrite in C++17 with Qt6 Widgets (no Python, no OpenCV).
-  * Photoshop-style layout: menus, options bar, toolbox, document tabs,
-    Layers / Properties / History panels, status bar.
-  * Tools: rectangle/ellipse/lasso marquee, magic wand, move (including
-    selected pixels), brush, eraser, paint bucket, gradient, eyedropper,
-    crop, free transform, raster text, rectangle/ellipse shapes, zoom, hand.
-  * Undo/redo for every edit; layer blend modes and opacity.
-  * Adjustments (brightness/contrast, hue/saturation, levels, tint, invert,
-    grayscale) and filters (Gaussian blur, unsharp mask, median, noise) with
-    live preview.
-  * Image/canvas size, rotate and flip.
-  * Import/export PNG, JPEG, WebP, BMP, TIFF; save/load .nxe projects.
-  * Removed from 1.x: curves, presets, background removal, OpenCV sharpen,
-    text/shape vector layers.
+  * Rewrite the user interface with GTK 4 (gtkmm); Qt6 is no longer used.
+  * GIMP-style layout: menu bar, toolbox, tool options bar, rulers, document
+    tabs, Colour (HSV) panel, Layers and History panels, status bar.
+  * Core features: marquee/lasso/magic wand selections, move with selected
+    pixels, brush, eraser, bucket, gradient, eyedropper, crop, free transform,
+    raster text, rectangle/ellipse shapes, zoom/pan, undo/redo, blend modes,
+    opacity, adjustments, filters with live preview, image/canvas size, rotate
+    and flip, PNG/JPEG/WebP/BMP/TIFF import and export, .nxe save/load.
+  * Regressions from 2.x (OpenCV build): curves, presets, background removal,
+    OpenCV sharpen, vector text/shape layers and histogram are not included.
 
- -- hyggshidev@gmail.com  Fri, 10 Oct 2026 12:00:00 +0700
+ -- Hyggshi <hyggshidev@gmail.com>  Sat, 10 Oct 2026 00:00:00 +0700

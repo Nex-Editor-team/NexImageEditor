@@ -1,32 +1,38 @@
 cmake_minimum_required(VERSION 3.16)
-project(NexImageEditor VERSION 2.0.0 LANGUAGES CXX)
+project(NexImageEditor VERSION 3.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_AUTOMOC ON)
 
 option(NEX_BUILD_TESTS "Build the unit test executable" OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
+pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
+pkg_check_modules(GDKPIXBUF REQUIRED IMPORTED_TARGET gdk-pixbuf-2.0)
+pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0 gobject-2.0)
 
-# Everything except main.cpp lives in a static library so tests can link it.
-file(GLOB_RECURSE NEX_LIB_SOURCES CONFIGURE_DEPENDS src/core/*.cpp src/tools/*.cpp src/ui/*.cpp)
-file(GLOB_RECURSE NEX_LIB_HEADERS CONFIGURE_DEPENDS src/core/*.h src/tools/*.h src/ui/*.h)
-
-add_library(nexcore STATIC ${NEX_LIB_SOURCES} ${NEX_LIB_HEADERS})
+# Core (no GTK): document model, pixel operations, file formats, settings, tool metadata.
+file(GLOB NEX_CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp src/tools/*.cpp)
+add_library(nexcore STATIC ${NEX_CORE_SOURCES})
 target_include_directories(nexcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(nexcore PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(nexcore PUBLIC PkgConfig::CAIRO PkgConfig::PANGOCAIRO PkgConfig::GDKPIXBUF PkgConfig::GLIB)
 if(MSVC)
     target_compile_options(nexcore PRIVATE /W4 /permissive-)
 else()
     target_compile_options(nexcore PRIVATE -Wall -Wextra)
 endif()
 
-add_executable(NexImageEditor src/main.cpp)
-target_link_libraries(NexImageEditor PRIVATE nexcore)
-if(WIN32)
-    set_target_properties(NexImageEditor PROPERTIES WIN32_EXECUTABLE TRUE)
+# GUI: GTK 4 through gtkmm.
+pkg_check_modules(GTKMM REQUIRED IMPORTED_TARGET gtkmm-4.0)
+file(GLOB NEX_UI_SOURCES CONFIGURE_DEPENDS src/ui/*.cpp)
+add_executable(NexImageEditor src/main.cpp ${NEX_UI_SOURCES})
+target_link_libraries(NexImageEditor PRIVATE nexcore PkgConfig::GTKMM)
+if(MSVC)
+    target_compile_options(NexImageEditor PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(NexImageEditor PRIVATE -Wall -Wextra)
 endif()
 
 include(GNUInstallDirs)

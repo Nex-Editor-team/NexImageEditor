@@ -5,7 +5,12 @@ Maintainer: hyggshidev@gmail.com
 Build-Depends: debhelper-compat (= 13),
                cmake (>= 3.16),
                build-essential,
-               qt6-base-dev
+               pkg-config,
+               libgtkmm-4.0-dev,
+               libcairo2-dev,
+               libpango1.0-dev,
+               libgdk-pixbuf-2.0-dev,
+               libglib2.0-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/Hyggshi-OS-Research-Technology/NexImageEditor
 
@@ -13,11 +18,13 @@ Package: neximageeditor
 Architecture: any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
-         qt6-image-formats-plugins
-Description: Layer-based image editor written in C++17 and Qt6
- NexImageEditor is a lightweight raster image editor with a Photoshop-style
- layout: toolbox, options bar, document tabs, and Layers, Properties and
- History panels. It supports selections (rectangle, ellipse, lasso, magic
- wand), painting tools, gradients, raster text and shapes, free transform,
- crop, adjustments, filters with live preview, undo/redo, and PNG/JPEG/WebP/
- BMP/TIFF import and export, plus its own .nxe project format.
+         webp-pixbuf-loader
+Description: Layer-based image editor written in C++17 and GTK 4
+ NexImageEditor is a lightweight raster image editor with a GIMP-style layout:
+ menu bar, toolbox, tool options bar, document tabs, a rulers-and-canvas view,
+ and Colour, Layers and History panels with a status bar. It supports rectangle,
+ ellipse, lasso and magic wand selections, move (including selected pixels),
+ brush, eraser, bucket fill, gradients, eyedropper, crop, free transform, raster
+ text and shapes, undo/redo, layer blend modes and opacity, colour adjustments,
+ filters with live preview, canvas and image size, rotate and flip, and
+ PNG/JPEG/WebP/BMP/TIFF import and export, plus its own .nxe project format.

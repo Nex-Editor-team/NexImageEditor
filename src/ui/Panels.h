@@ -1,63 +1,68 @@
 #pragma once
-#include <QWidget>
+#include "core/Document.h"
+#include "core/History.h"
 
-class CanvasView;
-class QCheckBox;
-class QComboBox;
-class QLabel;
-class QListWidget;
-class QSlider;
-class QLineEdit;
-class QSpinBox;
-class QUndoView;
+#include <gtkmm.h>
 
-// Layer list (top layer first) with add/duplicate/delete/merge/reorder buttons.
-class LayersPanel : public QWidget {
-    Q_OBJECT
+#include <functional>
+#include <vector>
+
+// Foreground / background colour: HSV sliders plus a hex entry (GIMP-style colour panel).
+class ColorPanel {
 public:
-    explicit LayersPanel(QWidget* parent = nullptr);
-    void setView(CanvasView* view);
-    void refresh();
+    ColorPanel(std::function<void(Color fg, Color bg)> onChange);
+    Gtk::Widget& widget() { return m_root; }
+    void setColors(Color fg, Color bg);
 
 private:
-    void onRowChanged(int row);
-    void onItemChanged(class QListWidgetItem* item);
-    int layerIndexForRow(int row) const;
+    void fromSliders();
+    void toSliders(Color c);
+    void swap();
 
-    CanvasView* m_view = nullptr;
-    QListWidget* m_list;
+    std::function<void(Color, Color)> m_onChange;
+    Color m_fg{0, 0, 0, 255}, m_bg{255, 255, 255, 255};
     bool m_updating = false;
+    Gtk::Box m_root{Gtk::Orientation::VERTICAL, 4};
+    Gtk::DrawingArea m_swatch;
+    Gtk::Scale m_h, m_s, m_v;
+    Gtk::Entry m_hex;
+    Gtk::Button m_swap;
 };
 
-// Name, opacity, blend mode, lock and position of the active layer.
-class PropertiesPanel : public QWidget {
-    Q_OBJECT
+// Layers list plus properties of the active layer (blend mode, opacity).
+class LayersPanel {
 public:
-    explicit PropertiesPanel(QWidget* parent = nullptr);
-    void setView(CanvasView* view);
-    void refresh();
+    struct Callbacks {
+        std::function<void(int)> select;
+        std::function<void(int, bool)> visible;
+        std::function<void(BlendMode)> blend;
+        std::function<void(double)> opacity;  // 0..1, called continuously
+        std::function<void(const std::string&)> action;  // new, dup, delete, up, down, merge
+    };
+    explicit LayersPanel(Callbacks cb);
+    Gtk::Widget& widget() { return m_root; }
+    void rebuild(const Document& doc);
 
 private:
-    CanvasView* m_view = nullptr;
-    QLabel* m_title;
-    QLineEdit* m_name;
-    QSlider* m_opacity;
-    QSpinBox* m_opacitySpin;
-    QComboBox* m_blend;
-    QCheckBox* m_locked;
-    QSpinBox* m_x;
-    QSpinBox* m_y;
-    QLabel* m_size;
+    Callbacks m_cb;
     bool m_updating = false;
+    Gtk::Box m_root{Gtk::Orientation::VERTICAL, 4};
+    Gtk::ListBox m_list;
+    Gtk::DropDown m_blend;
+    Gtk::Scale m_opacity;
+    Glib::RefPtr<Gtk::Adjustment> m_opacityAdj;
 };
 
-// Undo history list.
-class HistoryPanel : public QWidget {
-    Q_OBJECT
+// History list. Row 0 is the original state; row k means k applied edits.
+class HistoryPanel {
 public:
-    explicit HistoryPanel(QWidget* parent = nullptr);
-    void setView(CanvasView* view);
+    explicit HistoryPanel(std::function<void(size_t)> onJump);
+    Gtk::Widget& widget() { return m_scroll; }
+    void rebuild(const History& h);
 
 private:
-    QUndoView* m_list;
+    std::function<void(size_t)> m_onJump;
+    bool m_updating = false;
+    Gtk::ScrolledWindow m_scroll;
+    Gtk::ListBox m_list;
 };

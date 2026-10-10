@@ -1,17 +1,18 @@
 #include "ui/MainWindow.h"
-#include "ui/Theme.h"
 
-#include <QApplication>
+#include <gtkmm.h>
+
+#include <memory>
 
 int main(int argc, char** argv) {
-    QApplication app(argc, argv);
-    QApplication::setApplicationName("NexImageEditor");
-    QApplication::setOrganizationName("Hyggshi");
-    QApplication::setApplicationVersion("2.0.0");
-    Theme::apply(app);
-
-    MainWindow win;
-    win.show();
-    for (int i = 1; i < argc; ++i) win.openPath(QString::fromLocal8Bit(argv[i]));
-    return app.exec();
+    auto app = Gtk::Application::create("org.neximageeditor.App");
+    std::unique_ptr<MainWindow> window;
+    app->signal_activate().connect([&] {
+        if (!window) {
+            window = std::make_unique<MainWindow>(*app);
+            app->add_window(*window);
+        }
+        window->present();
+    });
+    return app->run(argc, argv);
 }
