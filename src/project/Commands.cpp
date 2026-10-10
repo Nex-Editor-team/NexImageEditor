@@ -72,3 +72,27 @@ void ResizeCanvasCommand::apply(QSize size, QPointF offset) {
 
 void ResizeCanvasCommand::undo() { apply(m_before, -m_offset); }
 void ResizeCanvasCommand::redo() { apply(m_after, m_offset); }
+
+CropCanvasCommand::CropCanvasCommand(Project* project, QRect crop)
+    : QUndoCommand("Crop Canvas"), m_project(project), m_before(project->canvasSize()),
+      m_crop(crop.intersected(QRect(QPoint(), m_before))) {
+    if (m_crop.isEmpty() || m_crop == QRect(QPoint(), m_before)) setObsolete(true);
+    for (const auto& layer : project->layers())
+        m_centers.emplace_back(layer->id(), layer->transform.center);
+}
+
+void CropCanvasCommand::apply(bool cropped) {
+    if (isObsolete()) return;
+    m_project->setCanvasSize(cropped ? m_crop.size() : m_before);
+    for (const auto& layer : m_project->layers()) {
+        for (const auto& entry : m_centers) {
+            if (entry.first == layer->id()) {
+                layer->transform.center = entry.second - (cropped ? QPointF(m_crop.topLeft()) : QPointF());
+                break;
+            }
+        }
+    }
+}
+
+void CropCanvasCommand::undo() { apply(false); }
+void CropCanvasCommand::redo() { apply(true); }

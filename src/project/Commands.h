@@ -150,3 +150,17 @@ private:
     QPointF m_offset;
     void apply(QSize size, QPointF offset);
 };
+
+// Cropping changes document bounds without destroying off-canvas layer pixels.
+class CropCanvasCommand : public QUndoCommand {
+public:
+    CropCanvasCommand(Project* project, QRect crop);
+    void undo() override;
+    void redo() override;
+private:
+    Project* m_project;
+    QSize m_before;
+    QRect m_crop;
+    std::vector<std::pair<QUuid, QPointF>> m_centers;
+    void apply(bool cropped);
+};

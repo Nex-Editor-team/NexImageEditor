@@ -99,7 +99,10 @@ if(BUILD_TESTING)
     add_executable(ContextMenuTests tests/ContextMenuTests.cpp)
     target_link_libraries(ContextMenuTests PRIVATE NexEditor)
     add_test(NAME ContextMenuTests COMMAND ContextMenuTests)
-    set_tests_properties(EditorCoreTests EditorUiTests DragDropTests ContextMenuTests PROPERTIES
+    add_executable(EditingToolsTests tests/EditingToolsTests.cpp)
+    target_link_libraries(EditingToolsTests PRIVATE NexEditor)
+    add_test(NAME EditingToolsTests COMMAND EditingToolsTests)
+    set_tests_properties(EditorCoreTests EditorUiTests DragDropTests ContextMenuTests EditingToolsTests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         TIMEOUT 60)
 endif()

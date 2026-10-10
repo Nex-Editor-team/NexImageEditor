@@ -1,6 +1,8 @@
 #include "Filters.h"
 #include <algorithm>
 #include <vector>
+#include <opencv2/imgproc.hpp>
+#include <cmath>
 
 namespace {
 inline int clamp255(int v) { return std::clamp(v, 0, 255); }
@@ -24,7 +26,7 @@ ImageBuffer grayscale(const ImageBuffer& src) {
 
 ImageBuffer invert(const ImageBuffer& src) {
     if (src.isNull()) return {};
-    QImage img = src.image().copy();
+    QImage img = src.image().convertToFormat(QImage::Format_ARGB32);
     img.invertPixels(QImage::InvertRgb);
     return ImageBuffer(img);
 }
@@ -44,6 +46,22 @@ ImageBuffer sepia(const ImageBuffer& src) {
         }
     }
     return ImageBuffer(img);
+}
+
+// Blur premultiplied color and alpha together, avoiding colored halos at transparency.
+ImageBuffer gaussianBlur(const ImageBuffer& src, double sigma) {
+    if (src.isNull() || sigma <= 0) return src;
+    if (!std::isfinite(sigma) || sigma > 100) return {};
+    QImage out(src.size(), QImage::Format_ARGB32_Premultiplied);
+    if (out.isNull()) return {};
+    try {
+        const QImage& image = src.image();
+        cv::Mat input(image.height(), image.width(), CV_8UC4,
+                      const_cast<uchar*>(image.constBits()), image.bytesPerLine());
+        cv::Mat output(out.height(), out.width(), CV_8UC4, out.bits(), out.bytesPerLine());
+        cv::GaussianBlur(input, output, cv::Size(0, 0), sigma, sigma, cv::BORDER_REFLECT_101);
+    } catch (const cv::Exception&) { return {}; }
+    return ImageBuffer(out);
 }
 
 // Simple separable box blur (two passes: horizontal then vertical).

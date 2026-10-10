@@ -9,6 +9,7 @@ class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
 class QContextMenuEvent;
+class QKeyEvent;
 #include "../project/Project.h"
 #include "../engine/Transform.h"
 
@@ -35,14 +36,22 @@ public:
     void setZoom(double zoom);
     double zoom() const { return m_zoom; }
     void zoomToFit();
+    QRect cropRect() const { return m_cropRect; }
+    void setCropAspect(QSize aspect);
+    void applyCrop();
+    void cancelCrop();
 
 signals:
+    void zoomChanged(double zoom);
+    void cropChanged(QRect rect);
+    void cropRequested(QRect rect);
     void layerContextMenuRequested(Layer* layer, QPoint globalPosition);
     void imageFilesDropped(const QStringList& paths, QPointF canvasPosition);
     void selectionChanged(Layer* layer);
     void transformLiveChanged(Layer* layer); // fired continuously while dragging (for Properties panel)
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
@@ -54,6 +63,18 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
 
 private:
+    void drawCropOverlay(QPainter& painter) const;
+    void beginCrop(QPointF widgetPosition);
+    void updateCrop(QPointF widgetPosition);
+    QRect m_cropRect;
+    QSize m_cropAspect;
+    bool m_cropDragging = false;
+    bool m_cropMoving = false;
+    QPoint m_cropAnchor;
+    QRect m_cropStartRect;
+    bool m_panning = false;
+    QPointF m_panStartMouse, m_panStartOffset;
+
     // --- coordinate mapping ---
     QPointF canvasOrigin() const; // top-left of the canvas in widget coords
     QPointF widgetToCanvas(const QPointF& p) const;

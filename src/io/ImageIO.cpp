@@ -2,6 +2,7 @@
 #include <QImageReader>
 #include <QImageWriter>
 #include <QFileInfo>
+#include <QSaveFile>
 
 namespace ImageIO {
 
@@ -13,11 +14,15 @@ ImageBuffer loadImage(const QString& path) {
     return ImageBuffer(img);
 }
 
-bool saveImage(const QString& path, const ImageBuffer& buffer, int quality) {
+bool saveImage(const QString& path, const ImageBuffer& buffer, int quality, const QByteArray& format) {
     if (buffer.isNull()) return false;
-    QImageWriter writer(path);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    const QByteArray actualFormat = format.isEmpty() ? QFileInfo(path).suffix().toLatin1() : format;
+    QImageWriter writer(&file, actualFormat);
     if (quality >= 0) writer.setQuality(quality);
-    return writer.write(buffer.image());
+    if (!writer.write(buffer.image())) return false;
+    return file.commit();
 }
 
 bool isSupportedExtension(const QString& path) {

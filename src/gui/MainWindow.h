@@ -25,6 +25,9 @@ private slots:
     void onImportImage();
     void onExportImage();
     void onResizeCanvas();
+    void onAbout();
+    void onFilter(const QString& name);
+    void onCrop(QRect rect);
 
     void onAddRasterLayer();
     void onAddTextLayer();

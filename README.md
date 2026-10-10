@@ -120,3 +120,67 @@ URL/thư mục/văn bản và trường hợp tệp ảnh hỏng.
   Esc đóng menu mà không chỉnh sửa nội dung.
 - `ContextMenuTests` kiểm tra chọn đúng layer, trạng thái các mục, thao tác
   nhân đôi/ẩn/dán và Undo, cùng menu trên vùng trống và mở bằng bàn phím.
+
+
+## Đợt công cụ cơ bản: About, Crop, Export, Filter, Zoom
+
+### About
+
+**Help → About NexImageEditor** hiển thị thông tin dự án, MIT license, phiên bản
+Qt/OpenCV đang dùng và liên kết mã nguồn. **About Qt** hiển thị thông tin Qt.
+
+### Crop (cắt khung tài liệu)
+
+1. Chọn **Crop** hoặc nhấn `C` khi canvas có focus.
+2. Chọn Free, 1:1, 16:9, 4:3 (hoặc 9:16, 3:4) trên thanh Crop Options.
+3. Kéo tạo khung; kéo bên trong để di chuyển, kéo bốn góc để đổi kích thước.
+4. Nhấn **Enter / Apply Crop** để áp dụng, **Esc / Cancel** để hủy.
+
+Crop áp dụng cho **toàn bộ canvas**, không chỉ layer đang chọn. Tất cả layer,
+kể cả layer ẩn/khóa, được dịch tọa độ theo gốc khung mới. Pixel ngoài khung vẫn
+được giữ trong layer; đây không phải lệnh xóa pixel vĩnh viễn. Undo/Redo khôi
+phục kích thước và tọa độ. Khung crop tạm chưa áp dụng không được lưu vào dự án.
+Tỉ lệ cố định dùng kích thước pixel nguyên, vì vậy khung được làm tròn xuống
+bội số của tỉ lệ; khung nhỏ hơn một đơn vị tỉ lệ sẽ không được áp dụng.
+
+### Export mở rộng
+
+**File → Export Flattened Image…** (`Ctrl+E`) hỗ trợ:
+
+- PNG, JPEG, WebP; format thiếu plugin được vô hiệu hóa.
+- Chất lượng JPEG/WebP 1–100; PNG là lossless.
+- Width/Height theo px, giữ tỉ lệ hoặc nhập độc lập; Scale original (%) khi giữ tỉ lệ.
+- Nội suy Nearest, Bilinear, Bicubic, Lanczos, Area.
+- Giữ alpha với PNG/WebP hoặc ghép lên màu nền; JPEG luôn dùng màu nền đặc.
+- Kích thước tối đa 20.000 px/chiều, 100 megapixel cho cả canvas nguồn và đầu ra
+  nhằm hạn chế cấp phát RAM quá lớn. Đây không phải bảo đảm đủ RAM trên mọi máy.
+
+Export không đổi layer, kích thước canvas hay lịch sử Undo của dự án. Việc ghi
+file dùng QSaveFile để không ghi đè nửa chừng nếu xuất thất bại.
+
+### Filter và Zoom
+
+**Filter** gồm Grayscale, Invert, Sepia, Gaussian Blur (OpenCV) và Sharpen.
+Áp dụng vào pixel gốc của raster layer đang chọn, giữ nguyên các điều chỉnh
+màu/tint phía sau; có Undo/Redo. Không áp dụng trực tiếp lên text/shape hay layer
+khóa. Gaussian Blur và resize nội suy xử lý màu premultiplied-alpha để tránh
+viền đen quanh vùng trong suốt. Hiện các filter áp dụng sau khi xác nhận,
+chưa có preview tương tác trong hộp thoại.
+
+**View → Actual Size** (`Ctrl+1`), **Zoom to Fit** (`Ctrl+0`), **Set Zoom…** hoặc
+ô % trên toolbar cho zoom 2–4000%. `V` chọn Transform, `H` chọn Pan, `C` chọn
+Crop khi canvas có focus; không chiếm phím khi đang gõ trong bảng thuộc tính.
+Có thể giữ chuột giữa để pan ở các tool, hoặc kéo chuột trái trong tool Pan.
+
+### Những phần chưa triển khai trong đợt này
+
+- Brush/Eraser và Eyedropper + bảng màu/lịch sử màu.
+- Vùng chọn pixel rectangle/ellipse/lasso/wand, cộng/trừ/đảo/feather.
+- Layer mask và Merge/Flatten layer (xuất ảnh gộp đã có, nhưng chưa có lệnh gộp layer).
+- Clone/healing, tablet pressure, straighten, guides/snap, groups, layer effects,
+  batch export, quản lý EXIF/ICC đầy đủ, recent files/theme/shortcut settings.
+- AI segmentation, Liquify/warp/content-aware, RAW/PSD/plugins, 16-bit/CMYK.
+
+`EditingToolsTests` kiểm tra hình học crop, kéo/di chuyển/resize khung, Enter/Esc,
+Undo/Redo, blur có alpha, các thuật toán resize, lưu định dạng tường minh/ghi
+thất bại, và đồng bộ kích thước/alpha trong Export dialog.
