@@ -73,6 +73,13 @@ install(TARGETS NexImageEditor
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/linux/NexImageEditor.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES packaging/linux/NexImageEditor.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+endif()
+
 # NOTE: WebP read/write needs Qt's "qtimageformats" add-on module/plugin
 # installed alongside Qt (apt: qt6-image-formats-plugins, or the
 # qtimageformats source module built from source). PNG/JPEG work out of

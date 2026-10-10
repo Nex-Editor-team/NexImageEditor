@@ -62,3 +62,31 @@ Các phím tắt có sẵn: `Ctrl+N/O/S` tạo/mở/lưu dự án, `Ctrl+Shift+S
 
 CI chỉ thực thi sau khi thay đổi được đưa lên GitHub. Để kiểm tra trên máy cá nhân,
 sử dụng các lệnh build/test ở đầu tài liệu.
+
+## Build AppImage trên GitHub Actions
+
+Workflow **Build AppImage** (`.github/workflows/appimage.yml`) tự chạy khi push/PR,
+hoặc chọn **Actions → Build AppImage → Run workflow** để chạy thủ công sau khi
+workflow có trên nhánh mặc định. Workflow build Release, đóng gói Qt6/OpenCV
+bằng linuxdeploy + plugin Qt, rồi kiểm tra khởi động bản đã đóng gói. Bộ test
+core/UI vẫn chạy riêng trong workflow **Build and test**; artifact AppImage
+không có nghĩa là toàn bộ regression test đã đạt.
+
+Tải artifact **NexImageEditor-AppImage-x86_64-…** ở cuối trang workflow run thành công.
+Giải nén ZIP để lấy `NexImageEditor-<commit>-x86_64.AppImage` và `SHA256SUMS`:
+
+```sh
+sha256sum -c SHA256SUMS
+chmod +x NexImageEditor-*-x86_64.AppImage
+./NexImageEditor-*-x86_64.AppImage
+```
+
+- Bản hiện tại dành cho Linux **x86_64**, build trên Ubuntu 24.04
+  (glibc 2.39); không cam kết chạy trên các distro cũ hơn.
+- Đóng gói thư viện Qt/OpenCV và plugin ảnh WebP; không cần cài các gói dev trên
+  máy người dùng. Các thư viện hệ thống/driver đồ họa vẫn phụ thuộc máy chạy.
+- Nếu máy không có FUSE, dùng `./NexImageEditor-*-x86_64.AppImage --appimage-extract`
+  rồi chạy `./squashfs-root/AppRun`.
+- Artifacts giữ 14 ngày; workflow không tự phát hành GitHub Release.
+- Phiên bản công cụ đóng gói được cố định trong workflow. Khi nâng linuxdeploy,
+  cập nhật cả checksum SHA-256 tương ứng.
