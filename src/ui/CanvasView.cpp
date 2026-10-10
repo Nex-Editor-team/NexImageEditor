@@ -87,20 +87,21 @@ void CanvasView::buildWidgets() {
 
     auto scroll = Gtk::EventControllerScroll::create();
     scroll->set_flags(Gtk::EventControllerScroll::Flags::VERTICAL);
-    Gtk::EventControllerScroll* scrollRaw = scroll.get();
-    scroll->signal_scroll().connect([this, scrollRaw](double, double dy) {
-        GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(scrollRaw->gobj()));
-        if (st & GDK_CONTROL_MASK) {
-            double ax = m_cursor.x * m_zoom + m_panX, ay = m_cursor.y * m_zoom + m_panY;
-            zoomBy(dy < 0 ? 1.1 : 1 / 1.1, ax, ay);
-        } else {
-            m_panY -= dy * 40;
-            redrawAll();
-            if (m_hooks.viewMoved) m_hooks.viewMoved(*this);
-        }
-        return true;
-    });
+    scroll->signal_scroll().connect(sigc::mem_fun(*this, &CanvasView::onScroll), false);
     m_area.add_controller(scroll);
+}
+
+bool CanvasView::onScroll(double, double dy) {
+    GdkModifierType st = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(m_area.gobj()));
+    if (st & GDK_CONTROL_MASK) {
+        const double ax = m_cursor.x * m_zoom + m_panX, ay = m_cursor.y * m_zoom + m_panY;
+        zoomBy(dy < 0 ? 1.1 : 1 / 1.1, ax, ay);
+    } else {
+        m_panY -= dy * 40;
+        redrawAll();
+        if (m_hooks.viewMoved) m_hooks.viewMoved(*this);
+    }
+    return true;
 }
 
 void CanvasView::setTool(ToolId t, const ToolOptions& o) {

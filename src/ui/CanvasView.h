@@ -78,6 +78,7 @@ private:
     static IRect rectFrom(PointD a, PointD b);
     Handle handleAt(double sx, double sy) const;
 
+    bool onScroll(double dx, double dy);
     void onDragBegin(double x, double y, bool shift, bool alt);
     void onDragUpdate(double dx, double dy);
     void onDragEnd(double dx, double dy);
