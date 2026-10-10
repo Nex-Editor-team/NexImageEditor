@@ -1,44 +1,76 @@
 # NexImageEditor
 
-A Photoshop-style raster image editor (remake, Python + Qt 6).
-
-## Run
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python -m neximage [files...]
-```
-
-Tests: `python tests/test_core.py` and `python tests/test_gui.py` (run offscreen with
-`QT_QPA_PLATFORM=offscreen`).
+A layer-based raster image editor written in **C++17 with Qt 6**, laid out
+like Photoshop: menu bar, options bar, toolbox on the left, document tabs,
+Layers / Properties / History panels on the right, and a status bar.
 
 ## Features
 
-- **UI**: menu bar, tool options bar, vertical toolbox with FG/BG swatches, document tabs,
-  Layers / History / Properties panels, zoom and cursor status bar, dark theme.
-- **Layers**: add, duplicate, delete, merge down, flatten, move up/down, rename, visibility,
-  lock, opacity, 12 blend modes, layer via copy (Ctrl+J).
-- **Selection**: rectangular/elliptical marquee, lasso, magic wand (tolerance, contiguous),
-  select all / deselect / inverse, add (Shift) and subtract (Alt).
-- **Tools**: Move (also moves selected pixels), Crop, Brush, Eraser (size/hardness/opacity),
-  Paint Bucket, Gradient, Eyedropper, Text (rasterized text layer), Rectangle/Ellipse shapes,
-  Hand, Zoom, Free Transform (Ctrl+T, scale and move).
-- **Adjustments**: Brightness/Contrast, Hue/Saturation, Levels, Threshold, Desaturate, Invert
-  (live preview dialogs).
-- **Filters**: Gaussian Blur, Unsharp Mask, Median, Add Noise.
-- **Image**: Image Size (resample), Canvas Size (anchor), rotate 90°/180°, flip.
-- **Editing**: unlimited undo/redo with a History panel, cut/copy/copy merged/paste,
-  clear, fill with foreground color.
-- **Files**: native project format `.nxe` (layers preserved), open PNG/JPEG/WebP/BMP/TIFF,
-  place image as layer, export PNG/JPEG/WebP/BMP/TIFF.
+- **Selections:** rectangle and ellipse marquee, lasso, magic wand (contiguous
+  or global, adjustable tolerance); Shift adds, Alt subtracts; select all,
+  deselect, invert, copy, paste as new layer.
+- **Move:** moves the layer, or the selected pixels when a selection exists.
+- **Painting:** brush (soft or hard), eraser, paint bucket, linear gradient,
+  eyedropper. All painting is clipped to the selection.
+- **Shapes and text:** rectangle and ellipse (filled or stroked), raster text.
+- **Transform:** crop (Enter/Esc), free transform with move, scale and rotate
+  (Enter/Esc), image size, canvas size, rotate, flip.
+- **Adjustments:** brightness/contrast, hue/saturation, levels, tint, invert,
+  grayscale.
+- **Filters:** Gaussian blur, unsharp mask, median, add noise. Each has live
+  preview in its dialog.
+- **Layers:** add, duplicate, delete, merge down, reorder, flatten, visibility,
+  lock, opacity, 12 blend modes, position.
+- **Undo/redo** for every edit (History panel shows the list).
+- **Files:** open and export PNG, JPEG, WebP, BMP, TIFF; save and reopen
+  `.nxe` projects (layers stored as PNG inside a binary container).
 
-## Limitations
+### Not carried over from 1.x
 
-- Text layers are rasterized (not re-editable).
-- Layers are pixel buffers: moving pixels outside a layer grows its buffer.
-- No channels, masks, smart objects, or pressure-sensitive brushes yet.
+The previous C++ version (1.x, OpenCV-based) had curves, presets, background
+removal, OpenCV sharpen, and text/shape vector layers. These are not in 2.0.
 
-## Legacy C++ version
+## Keyboard shortcuts
 
-The original Qt6/C++ implementation remains under `src/` and `CMakeLists.txt`.
+| Key | Tool | Key | Tool |
+|---|---|---|---|
+| V | Move | B | Brush |
+| M / Shift+M | Rect / ellipse marquee | E | Eraser |
+| L | Lasso | G / Shift+G | Bucket / gradient |
+| W | Magic wand | T | Text |
+| C | Crop | U / Shift+U | Rect / ellipse shape |
+| I | Eyedropper | Ctrl+T | Free transform |
+| Z | Zoom | H or Space+drag | Hand (pan) |
+
+X swaps foreground and background colours; D resets them. Ctrl+Z / Ctrl+Y
+(or Ctrl+Shift+Z) undo and redo.
+
+## Build
+
+Requirements: CMake 3.16+, a C++17 compiler, Qt 6 (Core, Gui, Widgets).
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/NexImageEditor
+```
+
+Run the tests:
+
+```bash
+cmake -S . -B build-test -DNEX_BUILD_TESTS=ON
+cmake --build build-test --parallel
+QT_QPA_PLATFORM=offscreen ctest --test-dir build-test --output-on-failure
+```
+
+On Debian/Ubuntu install `qt6-base-dev` and `qt6-image-formats-plugins`
+(the latter provides WebP and TIFF support).
+
+## Packages
+
+Pushing a `v*` tag runs `.github/workflows/build-cpp.yml`, which builds a
+`.deb` and a `tar.gz` and attaches them to the GitHub release.
+
+## License
+
+See [LICENSE](LICENSE).

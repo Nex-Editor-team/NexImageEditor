@@ -21,12 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6, OpenCV and Debian packaging tools
+      - name: Install Qt6 and Debian packaging tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake debhelper dpkg-dev fakeroot \
-            qt6-base-dev qt6-image-formats-plugins libopencv-dev
+            qt6-base-dev qt6-image-formats-plugins
+
+      - name: Build and run unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DNEX_BUILD_TESTS=ON
+          cmake --build build-test --parallel
+          ctest --test-dir build-test --output-on-failure
 
       - name: Build Debian package
         run: |

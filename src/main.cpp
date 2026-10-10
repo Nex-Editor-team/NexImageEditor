@@ -1,19 +1,17 @@
-#include <QApplication>
-#include <QStyleFactory>
-#include "gui/MainWindow.h"
+#include "ui/MainWindow.h"
+#include "ui/Theme.h"
 
-int main(int argc, char* argv[]) {
+#include <QApplication>
+
+int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("NexImageEditor");
-    QApplication::setOrganizationName("Nex");
+    QApplication::setOrganizationName("Hyggshi");
+    QApplication::setApplicationVersion("2.0.0");
+    Theme::apply(app);
 
-    if (QStyleFactory::keys().contains("Fusion")) {
-        QApplication::setStyle(QStyleFactory::create("Fusion"));
-    }
-
-    MainWindow window;
-    window.resize(1400, 900);
-    window.show();
-
+    MainWindow win;
+    win.show();
+    for (int i = 1; i < argc; ++i) win.openPath(QString::fromLocal8Bit(argv[i]));
     return app.exec();
 }
