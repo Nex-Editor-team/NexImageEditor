@@ -1,4 +1,5 @@
 #pragma once
+#include "core/Geometry.h"
 #include "core/Surface.h"
 
 #include <cairo.h>

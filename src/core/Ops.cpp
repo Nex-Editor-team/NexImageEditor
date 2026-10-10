@@ -1,5 +1,7 @@
 #include "core/Ops.h"
 
+#include "core/Pixels.h"
+
 #include <pango/pangocairo.h>
 
 #include <algorithm>
@@ -281,7 +283,8 @@ void moveSelectedPixels(Layer& L, const Selection& sel, int dx, int dy) {
 
 void transformLayer(Layer& L, const cairo_matrix_t& M) {
     const double lw = L.w(), lh = L.h();
-    const double pts[4][2] = {{L.x, L.y}, {L.x + lw, L.y}, {L.x, L.y + lh}, {L.x + lw, L.y + lh}};
+    const double lx = L.x, ly = L.y;
+    const double pts[4][2] = {{lx, ly}, {lx + lw, ly}, {lx, ly + lh}, {lx + lw, ly + lh}};
     double minx = 1e18, miny = 1e18, maxx = -1e18, maxy = -1e18;
     for (auto& p : pts) {
         double X = p[0], Y = p[1];
