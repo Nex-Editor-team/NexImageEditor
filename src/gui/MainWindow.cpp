@@ -100,6 +100,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_photoPanel, &PhotoAdjustmentsPanel::requestCanvasUpdate, m_canvas, qOverload<>(&QWidget::update));
 }
 
+MainWindow::~MainWindow() {
+    // QObject deletes child widgets/stacks after MainWindow's members and derived
+    // type are gone. QUndoStack::clear() emits signals during destruction; those
+    // callbacks must not access this document or call MainWindow slots then.
+    for (QObject* child : findChildren<QObject*>())
+        QObject::disconnect(child, nullptr, this, nullptr);
+    m_undoStack->clear();
+}
+
 void MainWindow::buildMenusAndToolbar() {
     // ---- File menu ----
     QMenu* fileMenu = menuBar()->addMenu("&File");
