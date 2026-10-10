@@ -25,14 +25,6 @@ void TransformLayerCommand::redo() {
     if (Layer* l = findLayer()) l->transform = m_after;
 }
 
-bool TransformLayerCommand::mergeWith(const QUndoCommand* other) {
-    if (other->id() != id()) return false;
-    const auto* o = static_cast<const TransformLayerCommand*>(other);
-    if (o->m_layerId != m_layerId) return false;
-    m_after = o->m_after; // extend this drag's end state
-    return true;
-}
-
 // ---- AddLayerCommand ----
 
 AddLayerCommand::AddLayerCommand(Project* project, std::unique_ptr<Layer> layer, int index, QUndoCommand* parent)
@@ -63,3 +55,20 @@ void RemoveLayerCommand::redo() {
 void RemoveLayerCommand::undo() {
     if (m_layer) m_project->insertLayer(std::move(m_layer), m_index);
 }
+
+ResizeCanvasCommand::ResizeCanvasCommand(Project* project, QSize size, bool centered)
+    : QUndoCommand("Resize Canvas"), m_project(project),
+      m_before(project->canvasSize()), m_after(size) {
+    if (centered)
+        m_offset = QPointF((size.width() - m_before.width()) / 2.0,
+                           (size.height() - m_before.height()) / 2.0);
+}
+
+void ResizeCanvasCommand::apply(QSize size, QPointF offset) {
+    m_project->setCanvasSize(size);
+    for (const auto& layer : m_project->layers())
+        layer->transform.center += offset;
+}
+
+void ResizeCanvasCommand::undo() { apply(m_before, -m_offset); }
+void ResizeCanvasCommand::redo() { apply(m_after, m_offset); }

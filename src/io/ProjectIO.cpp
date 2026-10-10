@@ -5,8 +5,10 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
+#include <QSaveFile>
 #include <QBuffer>
 #include <QFont>
+#include <utility>
 
 namespace {
 
@@ -198,10 +200,11 @@ bool saveProject(const QString& path, const Project& project) {
     }
     root["layers"] = layersArr;
 
-    QFile f(path);
+    QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly)) return false;
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    return true;
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    if (f.write(data) != data.size()) return false;
+    return f.commit();
 }
 
 bool loadProject(const QString& path, Project& outProject) {
@@ -212,12 +215,22 @@ bool loadProject(const QString& path, Project& outProject) {
     if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
 
     QJsonObject root = doc.object();
-    outProject.setCanvasSize(QSize(root["canvasWidth"].toInt(1920), root["canvasHeight"].toInt(1080)));
-    outProject.filePath = path;
+    if (root["format"].toString() != "NexImageEditor" || root["version"].toInt(-1) != 1
+        || !root["layers"].isArray()) return false;
+    const int width = root["canvasWidth"].toInt(-1);
+    const int height = root["canvasHeight"].toInt(-1);
+    if (width < 1 || width > 20000 || height < 1 || height > 20000) return false;
+
+    // Build separately: neither a failed read nor a second successful load may
+    // partially overwrite or append to the caller's existing document.
+    Project loaded(QSize(width, height));
+    loaded.filePath = path;
 
     for (const QJsonValue& v : root["layers"].toArray()) {
+        if (!v.isObject()) return false;
         QJsonObject o = v.toObject();
-        QString typeStr = o["type"].toString("raster");
+        QString typeStr = o["type"].toString();
+        if (typeStr != "raster" && typeStr != "text" && typeStr != "shape") return false;
 
         std::unique_ptr<Layer> layer;
         if (typeStr == "text") {
@@ -230,8 +243,14 @@ bool loadProject(const QString& path, Project& outProject) {
             tl->regenerate();
             layer = std::move(tl);
         } else if (typeStr == "shape") {
-            auto sl = std::make_unique<ShapeLayer>(ShapeKind(o["shapeKind"].toInt(0)), o["name"].toString("Shape"));
-            sl->localSize = QSize(o["shapeW"].toInt(200), o["shapeH"].toInt(200));
+            const int kind = o["shapeKind"].toInt(-1);
+            const int fill = o["fillMode"].toInt(0);
+            const int w = o["shapeW"].toInt(-1), h = o["shapeH"].toInt(-1);
+            if (kind < 0 || kind > int(ShapeKind::Line)
+                || fill < 0 || fill > int(ShapeFillMode::RadialGradient)
+                || w < 1 || w > 20000 || h < 1 || h > 20000) return false;
+            auto sl = std::make_unique<ShapeLayer>(ShapeKind(kind), o["name"].toString("Shape"));
+            sl->localSize = QSize(w, h);
             sl->cornerRadius = o["cornerRadius"].toInt(20);
             sl->fillMode = ShapeFillMode(o["fillMode"].toInt(0));
             sl->fillColor = QColor(o["fillColor"].toString("#ffff0000"));
@@ -243,7 +262,11 @@ bool loadProject(const QString& path, Project& outProject) {
             layer = std::move(sl);
         } else {
             auto rl = std::make_unique<Layer>(LayerType::Raster, o["name"].toString("Layer"));
-            rl->content = imageFromBase64Png(o["pixels"].toString());
+            if (!o["pixels"].isString()) return false;
+            const QString pixels = o["pixels"].toString();
+            rl->content = imageFromBase64Png(pixels);
+            // Empty raster layers are valid; nonempty, undecodable data is not.
+            if (!pixels.isEmpty() && rl->content.isNull()) return false;
             layer = std::move(rl);
         }
 
@@ -259,8 +282,9 @@ bool loadProject(const QString& path, Project& outProject) {
         layer->applyAdjustments();
         layer->transform = transformFromJson(o["transform"].toObject());
 
-        outProject.insertLayer(std::move(layer));
+        loaded.insertLayer(std::move(layer));
     }
+    outProject = std::move(loaded);
     return true;
 }
 

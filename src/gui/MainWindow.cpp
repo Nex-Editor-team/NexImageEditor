@@ -23,6 +23,10 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QMimeData>
+#include <QCloseEvent>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QSignalBlocker>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_project = std::make_unique<Project>(QSize(1920, 1080));
@@ -57,6 +61,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     syncPanelsFromProject();
     buildMenusAndToolbar();
     refreshTitle();
+    connect(m_undoStack, &QUndoStack::cleanChanged, this, &MainWindow::refreshTitle);
+    connect(m_undoStack, &QUndoStack::indexChanged, this, &MainWindow::refreshAfterCommand);
 
     // ---- wiring: canvas <-> panels <-> project ----
 
@@ -124,6 +130,12 @@ void MainWindow::buildMenusAndToolbar() {
     layerMenu->addAction("Add Text Layer", this, &MainWindow::onAddTextLayer);
     layerMenu->addAction("Add Shape Layer", this, &MainWindow::onAddShapeLayer);
 
+    layerMenu->addAction("Duplicate Layer", this, [this] { onDuplicateLayer(m_canvas->selectedLayer()); }, QKeySequence("Ctrl+D"));
+    layerMenu->addAction("Delete Layer", this, [this] { onDeleteLayer(m_canvas->selectedLayer()); }, QKeySequence::Delete);
+
+    QMenu* canvasMenu = menuBar()->addMenu("&Canvas");
+    canvasMenu->addAction("Canvas Size...", this, &MainWindow::onResizeCanvas, QKeySequence("Ctrl+Alt+C"));
+
     // ---- Transform/Image menu ----
     QMenu* imageMenu = menuBar()->addMenu("&Transform");
     imageMenu->addAction("Flip Horizontal", this, &MainWindow::onFlipHorizontal, QKeySequence("Shift+H"));
@@ -175,7 +187,8 @@ void MainWindow::buildMenusAndToolbar() {
 
 void MainWindow::refreshTitle() {
     QString name = m_project->filePath.isEmpty() ? "Untitled" : QFileInfo(m_project->filePath).fileName();
-    setWindowTitle(QString("%1 — NexImageEditor").arg(name));
+    setWindowTitle(QString("%1[*] — NexImageEditor").arg(name));
+    setWindowModified(!m_undoStack->isClean());
 }
 
 void MainWindow::syncPanelsFromProject() {
@@ -202,8 +215,11 @@ void MainWindow::onNewProject() {
     int h = QInputDialog::getInt(this, "New Project", "Height:", 1080, 1, 20000, 1, &ok);
     if (!ok) return;
 
-    m_project = std::make_unique<Project>(QSize(w, h));
+    if (!maybeSave()) return;
+    m_canvas->setSelectedLayer(nullptr);
+    updateSelection(nullptr);
     m_undoStack->clear();
+    m_project = std::make_unique<Project>(QSize(w, h));
     m_canvas->setProject(m_project.get());
     syncPanelsFromProject();
     m_layersPanel->refresh();
@@ -213,15 +229,17 @@ void MainWindow::onNewProject() {
 
 void MainWindow::onOpenProject() {
     QString path = QFileDialog::getOpenFileName(this, "Open Project", QString(), "NexImageEditor Project (*.nxproj)");
-    if (path.isEmpty()) return;
+    if (path.isEmpty() || !maybeSave()) return;
 
     auto loaded = std::make_unique<Project>();
     if (!ProjectIO::loadProject(path, *loaded)) {
         QMessageBox::warning(this, "Open Project", "Could not read this project file.");
         return;
     }
-    m_project = std::move(loaded);
+    m_canvas->setSelectedLayer(nullptr);
+    updateSelection(nullptr);
     m_undoStack->clear();
+    m_project = std::move(loaded);
     m_canvas->setProject(m_project.get());
     syncPanelsFromProject();
     m_layersPanel->refresh();
@@ -233,6 +251,8 @@ void MainWindow::onSaveProject() {
     if (m_project->filePath.isEmpty()) { onSaveProjectAs(); return; }
     if (!ProjectIO::saveProject(m_project->filePath, *m_project))
         QMessageBox::warning(this, "Save Project", "Could not save the project.");
+    else
+        m_undoStack->setClean();
 }
 
 void MainWindow::onSaveProjectAs() {
@@ -246,6 +266,7 @@ void MainWindow::onSaveProjectAs() {
         return;
     }
     m_project->filePath = path;
+    m_undoStack->setClean();
     refreshTitle();
 }
 
@@ -268,7 +289,6 @@ void MainWindow::onImportImage() {
 
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onExportImage() {
@@ -338,7 +358,6 @@ void MainWindow::onAddTextLayer() {
                                        m_project->canvasSize().height() / 2.0);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onAddShapeLayer() {
@@ -347,7 +366,6 @@ void MainWindow::onAddShapeLayer() {
                                        m_project->canvasSize().height() / 2.0);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onDeleteLayer(Layer* layer) {
@@ -356,7 +374,6 @@ void MainWindow::onDeleteLayer(Layer* layer) {
     if (idx < 0) return;
     if (m_canvas->selectedLayer() == layer) m_canvas->setSelectedLayer(nullptr);
     m_undoStack->push(new RemoveLayerCommand(m_project.get(), idx));
-    m_layersPanel->refresh();
     updateSelection(nullptr);
 }
 
@@ -367,7 +384,6 @@ void MainWindow::onDuplicateLayer(Layer* layer) {
     copy->transform.center += QPointF(20, 20);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(copy));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onCopyLayer(Layer* layer) {
@@ -386,7 +402,6 @@ void MainWindow::onPasteLayer() {
     Layer* raw = copy.get();
 
     m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(copy)));
-    m_layersPanel->refresh();
     m_canvas->setSelectedLayer(raw);
     m_layersPanel->selectLayer(raw);
     updateSelection(raw);
@@ -423,7 +438,6 @@ void MainWindow::onPasteImageFromSystemClipboard() {
     Layer* raw = layer.get();
 
     m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(layer)));
-    m_layersPanel->refresh();
     m_canvas->setSelectedLayer(raw);
     m_layersPanel->selectLayer(raw);
     updateSelection(raw);
@@ -433,8 +447,7 @@ void MainWindow::onMoveLayerUp(Layer* layer) {
     if (!layer) return;
     int idx = m_project->indexOf(layer);
     if (idx < 0 || idx == m_project->layerCount() - 1) return;
-    m_project->moveLayer(idx, idx + 1); // not undo-tracked for simplicity
-    m_layersPanel->refresh();
+    m_undoStack->push(new MoveLayerCommand(m_project.get(), idx, idx + 1));
     m_layersPanel->selectLayer(layer);
 }
 
@@ -442,15 +455,16 @@ void MainWindow::onMoveLayerDown(Layer* layer) {
     if (!layer) return;
     int idx = m_project->indexOf(layer);
     if (idx <= 0) return;
-    m_project->moveLayer(idx, idx - 1);
-    m_layersPanel->refresh();
+    m_undoStack->push(new MoveLayerCommand(m_project.get(), idx, idx - 1));
     m_layersPanel->selectLayer(layer);
 }
 
 void MainWindow::onLayerVisibilityToggled(Layer* layer, bool visible) {
     if (!layer) return;
-    layer->visible = visible;
-    m_canvas->update();
+    if (layer->visible == visible) return;
+    m_undoStack->push(new SetLayerPropertyCommand<bool>(m_project.get(), layer->id(),
+        layer->visible, visible, [](Layer* l) { return l->visible; },
+        [](Layer* l, bool v) { l->visible = v; }, "Change Layer Visibility"));
 }
 
 void MainWindow::onLayerSelectedInPanel(Layer* layer) {
@@ -510,5 +524,66 @@ void MainWindow::onResetTransform() {
     l->transform = after;
     m_undoStack->push(new TransformLayerCommand(m_project.get(), l->id(), before, after));
     m_propertiesPanel->refreshFromLayer();
+    m_canvas->update();
+}
+
+
+bool MainWindow::maybeSave() {
+    if (m_undoStack->isClean()) return true;
+    const auto answer = QMessageBox::warning(this, "Unsaved Changes",
+        "Save changes to this project before continuing?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) return false;
+    if (answer == QMessageBox::Discard) return true;
+    onSaveProject();
+    return m_undoStack->isClean(); // A cancelled or failed save must not discard work.
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (maybeSave()) event->accept();
+    else event->ignore();
+}
+
+void MainWindow::refreshAfterCommand() {
+    Layer* selected = m_canvas->selectedLayer();
+    if (m_project->indexOf(selected) < 0) {
+        selected = nullptr;
+        m_canvas->setSelectedLayer(nullptr);
+        updateSelection(nullptr);
+    }
+    // Restoring the same selection is UI bookkeeping, not a user selection.
+    const QSignalBlocker blockSelection(m_layersPanel);
+    m_layersPanel->refresh();
+    m_layersPanel->selectLayer(selected);
+    m_propertiesPanel->refreshFromLayer();
+    m_photoPanel->refreshFromLayer();
+    m_canvas->update();
+}
+
+void MainWindow::onResizeCanvas() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Canvas Size");
+    auto* form = new QFormLayout(&dialog);
+    auto* width = new QSpinBox(&dialog);
+    auto* height = new QSpinBox(&dialog);
+    width->setRange(1, 20000);
+    height->setRange(1, 20000);
+    width->setValue(m_project->canvasSize().width());
+    height->setValue(m_project->canvasSize().height());
+    form->addRow("Width (px)", width);
+    form->addRow("Height (px)", height);
+    auto* centered = new QCheckBox("Keep artwork centered", &dialog);
+    centered->setChecked(true);
+    form->addRow(centered);
+    form->addRow(new QLabel("Changes canvas bounds only; layers are not resampled or deleted.", &dialog));
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QSize size(width->value(), height->value());
+    if (size == m_project->canvasSize()) return;
+    m_undoStack->push(new ResizeCanvasCommand(m_project.get(), size, centered->isChecked()));
+    m_canvas->zoomToFit();
     m_canvas->update();
 }

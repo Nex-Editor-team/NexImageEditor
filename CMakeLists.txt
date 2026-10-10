@@ -43,9 +43,12 @@ endif()
 file(GLOB_RECURSE NEX_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 file(GLOB_RECURSE NEX_HEADERS CONFIGURE_DEPENDS src/*.h)
 
-add_executable(NexImageEditor ${NEX_SOURCES} ${NEX_HEADERS})
+list(REMOVE_ITEM NEX_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+add_library(NexEditor STATIC ${NEX_SOURCES} ${NEX_HEADERS})
+add_executable(NexImageEditor src/main.cpp)
+target_link_libraries(NexImageEditor PRIVATE NexEditor)
 
-target_include_directories(NexImageEditor PRIVATE
+target_include_directories(NexEditor PUBLIC
     src
     src/gui
     src/engine
@@ -54,7 +57,7 @@ target_include_directories(NexImageEditor PRIVATE
     ${OpenCV_INCLUDE_DIRS}
 )
 
-target_link_libraries(NexImageEditor PRIVATE
+target_link_libraries(NexEditor PUBLIC
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Core
@@ -74,3 +77,16 @@ install(TARGETS NexImageEditor
 # installed alongside Qt (apt: qt6-image-formats-plugins, or the
 # qtimageformats source module built from source). PNG/JPEG work out of
 # the box via the plugins Qt ships by default.
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(EditorCoreTests tests/EditorCoreTests.cpp)
+    target_link_libraries(EditorCoreTests PRIVATE NexEditor)
+    add_test(NAME EditorCoreTests COMMAND EditorCoreTests)
+
+    add_executable(EditorUiTests tests/EditorUiTests.cpp)
+    target_link_libraries(EditorUiTests PRIVATE NexEditor)
+    add_test(NAME EditorUiTests COMMAND EditorUiTests)
+    set_tests_properties(EditorCoreTests EditorUiTests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 60)
+endif()
