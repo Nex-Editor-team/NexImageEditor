@@ -1,5 +1,7 @@
 #include "core/Document.h"
 
+#include "core/Pixels.h"
+
 #include <QPainter>
 #include <algorithm>
 

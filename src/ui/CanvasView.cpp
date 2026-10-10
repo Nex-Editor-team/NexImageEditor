@@ -339,16 +339,23 @@ void CanvasView::restoreState(const DocState& s) {
 // ---------------------------------------------------------------- Document-level edits
 
 void CanvasView::editDocument(const QString& name, const std::function<void(Document&)>& fn) {
+    // Tools that cache layer state (free transform) must not outlive a layer change.
+    const bool restart = m_toolId == ToolId::Transform;
+    if (restart) m_tool->cancel();
     beginEdit(name);
     fn(m_doc);
     commitEdit();
+    if (restart) m_tool->begin();
     clampOrigin();
     QWidget::update();
 }
 
 void CanvasView::selectLayer(int index) {
     if (index < 0 || index >= int(m_doc.layers().size())) return;
+    const bool restart = m_toolId == ToolId::Transform;
+    if (restart) m_tool->cancel();
     m_doc.setActive(index);
+    if (restart) m_tool->begin();
     emit changed();
 }
 

@@ -106,13 +106,16 @@ static void testCropRotateResize() {
     Document d(20, 10, Qt::white);
     Ops::cropDocument(d, QRect(5, 2, 8, 4));
     CHECK(d.width() == 8 && d.height() == 4);
+    CHECK(d.layers()[0].x == -5 && d.layers()[0].y == -2);  // cropping moves layers, keeps pixels
     Ops::rotateDocument(d, 90);
     CHECK(d.width() == 4 && d.height() == 8);
     Ops::resizeImage(d, 16, 16);
     CHECK(d.width() == 16 && d.height() == 16);
-    CHECK(d.layers()[0].image.width() == 16);
-    Ops::resizeCanvas(d, 20, 20, 2, 2);
-    CHECK(d.width() == 20 && d.layers()[0].x == 4);
+    CHECK(!d.layers()[0].image.isNull());
+    const int x0 = d.layers()[0].x;
+    Ops::resizeCanvas(d, 20, 20, 2, 2);  // anchor right: content shifts by half the extra width
+    CHECK(d.width() == 20 && d.height() == 20);
+    CHECK(d.layers()[0].x == x0 + 4);
 }
 
 static void testSnapshotRestore() {

@@ -1,5 +1,7 @@
 #include "core/FileIO.h"
 
+#include "core/Pixels.h"
+
 #include <QBuffer>
 #include <QDataStream>
 #include <QFile>
