@@ -12,6 +12,11 @@ LayersPanel::LayersPanel(QWidget* parent) : QWidget(parent) {
     layout->addWidget(new QLabel("<b>Layers</b>"));
 
     m_list = new QListWidget(this);
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        auto* item = pos == QPoint(-1, -1) ? m_list->currentItem() : m_list->itemAt(pos);
+        emit layerContextMenuRequested(layerForItem(item), m_list->viewport()->mapToGlobal(pos));
+    });
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(m_list, 1);
 
@@ -101,6 +106,11 @@ void LayersPanel::refresh() {
 }
 
 void LayersPanel::selectLayer(Layer* layer) {
+    if (!layer) {
+        m_list->setCurrentRow(-1);
+        m_list->clearSelection();
+        return;
+    }
     for (int i = 0; i < m_list->count(); ++i) {
         if (layerForItem(m_list->item(i)) == layer) {
             m_list->setCurrentRow(i);

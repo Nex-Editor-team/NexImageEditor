@@ -9,5 +9,6 @@
 // to go stale).
 namespace ProjectIO {
     bool saveProject(const QString& path, const Project& project);
+    // Replaces outProject only on success; leaves it unchanged on failure.
     bool loadProject(const QString& path, Project& outProject);
 }

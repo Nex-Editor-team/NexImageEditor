@@ -20,9 +20,7 @@ public:
 
     void undo() override;
     void redo() override;
-    int id() const override { return 1001; }
-    // Coalesce consecutive drags of the same layer into one undo step.
-    bool mergeWith(const QUndoCommand* other) override;
+    // Canvas commits once per completed drag: keep each gesture independently undoable.
 
 private:
     Project* m_project;
@@ -105,7 +103,8 @@ public:
     bool mergeWith(const QUndoCommand* other) override {
         if (other->id() != id()) return false;
         const auto* next = static_cast<const SetToneAdjustmentsCommand*>(other);
-        if (next->m_layerId != m_layerId) return false;
+        if (next->m_project != m_project || next->m_layerId != m_layerId
+            || next->text() != text()) return false;
         m_after = next->m_after;
         return true;
     }
@@ -125,4 +124,43 @@ private:
     QUuid m_layerId;
     ToneParameters m_before;
     ToneParameters m_after;
+};
+
+// Stack ordering is restored exactly by undo/redo.
+class MoveLayerCommand : public QUndoCommand {
+public:
+    MoveLayerCommand(Project* project, int from, int to)
+        : QUndoCommand("Reorder Layer"), m_project(project), m_from(from), m_to(to) {}
+    void undo() override { m_project->moveLayer(m_to, m_from); }
+    void redo() override { m_project->moveLayer(m_from, m_to); }
+private:
+    Project* m_project;
+    int m_from;
+    int m_to;
+};
+
+class ResizeCanvasCommand : public QUndoCommand {
+public:
+    ResizeCanvasCommand(Project* project, QSize size, bool centered);
+    void undo() override;
+    void redo() override;
+private:
+    Project* m_project;
+    QSize m_before, m_after;
+    QPointF m_offset;
+    void apply(QSize size, QPointF offset);
+};
+
+// Cropping changes document bounds without destroying off-canvas layer pixels.
+class CropCanvasCommand : public QUndoCommand {
+public:
+    CropCanvasCommand(Project* project, QRect crop);
+    void undo() override;
+    void redo() override;
+private:
+    Project* m_project;
+    QSize m_before;
+    QRect m_crop;
+    std::vector<std::pair<QUuid, QPointF>> m_centers;
+    void apply(bool cropped);
 };

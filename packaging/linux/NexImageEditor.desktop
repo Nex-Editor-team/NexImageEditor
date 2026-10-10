@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NexImageEditor
+GenericName=Image Editor
+Comment=Layer-based image editor with Qt 6
+Exec=NexImageEditor
+Icon=NexImageEditor
+Terminal=false
+Categories=Graphics;RasterGraphics;2DGraphics;Qt;
+Keywords=image;editor;graphics;layer;photo;

@@ -196,11 +196,15 @@ void PhotoAdjustmentsPanel::connectSliderRow(
         if (m_layer) m_savedBeforeParams = m_layer->adjustments;
     });
 
-    connect(row.slider, &QSlider::valueChanged, this, [this, &row, onLiveChange](int v) {
+    connect(row.slider, &QSlider::valueChanged, this, [this, &row, onLiveChange, onCommit](int v) {
         updateValueLabel(row, v);
         if (!m_updatingUi && m_layer) {
+            // Keyboard, wheel and groove clicks do not emit sliderReleased.
+            const bool discreteChange = !row.slider->isSliderDown();
+            if (discreteChange) m_savedBeforeParams = m_layer->adjustments;
             onLiveChange(v * row.scale);
             applyLiveAdjustments();
+            if (discreteChange) onCommit();
         }
     });
 
@@ -624,6 +628,7 @@ void PhotoAdjustmentsPanel::refreshFromLayer() {
     m_curveWidget->setCurves(p.curveRgb, p.curveRed, p.curveGreen, p.curveBlue);
 
     m_updatingUi = false;
+    updateHistogram();
 }
 
 void PhotoAdjustmentsPanel::updateHistogram() {

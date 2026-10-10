@@ -1,0 +1,104 @@
+name: Build AppImage
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Linux x86_64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Run packaging tools without mounting via FUSE on hosted runners.
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      QMAKE: /usr/bin/qmake6
+      EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
+      LINUXDEPLOY_VERSION: 1-alpha-20251107-1
+      QT_PLUGIN_VERSION: 1-alpha-20250213-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ curl file desktop-file-utils \
+            qt6-base-dev qt6-image-formats-plugins libopencv-dev \
+            libxkbcommon-x11-0 libxcb-cursor0
+
+      - name: Build Release
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DBUILD_TESTING=OFF
+          cmake --build build --parallel 2
+
+      - name: Install into AppDir
+        run: |
+          DESTDIR="$GITHUB_WORKSPACE/AppDir" cmake --install build
+          desktop-file-validate AppDir/usr/share/applications/NexImageEditor.desktop
+
+      - name: Download pinned packaging tools
+        run: |
+          mkdir -p tools
+          curl --fail --location --retry 3 \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage" \
+            -o tools/linuxdeploy-x86_64.AppImage
+          echo 'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  tools/linuxdeploy-x86_64.AppImage' | sha256sum --check
+          curl --fail --location --retry 3 \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/${QT_PLUGIN_VERSION}/linuxdeploy-plugin-qt-x86_64.AppImage" \
+            -o tools/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x tools/*.AppImage
+
+      - name: Bundle Qt, OpenCV and create AppImage
+        run: |
+          export PATH="$GITHUB_WORKSPACE/tools:$PATH"
+          export VERSION="${GITHUB_SHA:0:8}"
+          export OUTPUT="NexImageEditor-${VERSION}-x86_64.AppImage"
+          tools/linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/NexImageEditor.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/NexImageEditor.svg \
+            --plugin qt \
+            --output appimage
+          # Qt imageformat plugins are loaded dynamically, not via ELF dependencies.
+          test -n "$(find AppDir -name libqwebp.so -print -quit)"
+          mkdir -p dist
+          mv "$OUTPUT" dist/
+          (cd dist && sha256sum *.AppImage > SHA256SUMS)
+
+      - name: Smoke test packaged application without FUSE
+        run: |
+          mkdir -p smoke-test
+          cd smoke-test
+          ../dist/*.AppImage --appimage-extract > /dev/null
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 10s ./squashfs-root/AppRun > startup.log 2>&1
+          status=$?
+          set -e
+          cat startup.log
+          # The editor should stay in its event loop until timeout, not crash/exit.
+          if [ "$status" -ne 124 ]; then
+            echo "Packaged application failed to stay running (status $status)."
+            exit 1
+          fi
+
+      - name: Upload AppImage and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexImageEditor-AppImage-x86_64-${{ github.sha }}
+          path: |
+            dist/*.AppImage
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

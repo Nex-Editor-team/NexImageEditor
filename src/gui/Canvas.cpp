@@ -1,6 +1,17 @@
 #include "Canvas.h"
 #include "../project/Commands.h"
 #include <QPainter>
+#include <QContextMenuEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QFileInfo>
+#include <QUrl>
+#include "../io/ImageIO.h"
+#include "../engine/CropGeometry.h"
+#include <QKeyEvent>
+#include <QPainterPath>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPolygonF>
@@ -9,17 +20,33 @@
 #include <cmath>
 
 namespace {
+// Only accept local image files. Never fetch remote URLs or move source files.
+QStringList droppedImagePaths(const QMimeData* mime) {
+    QStringList paths;
+    if (!mime || !mime->hasUrls()) return paths;
+    for (const QUrl& url : mime->urls()) {
+        if (!url.isLocalFile()) continue;
+        const QString path = url.toLocalFile();
+        if (ImageIO::isSupportedExtension(path) && QFileInfo(path).isFile())
+            paths.append(path);
+    }
+    paths.removeDuplicates();
+    return paths;
+}
+
 constexpr double kHandleRadiusPx = 6.0;      // hit-test radius for box handles, in widget px
 constexpr double kRotateHandleOffsetPx = 28.0; // distance of rotate handle above the box, widget px
 }
 
 Canvas::Canvas(QWidget* parent) : QWidget(parent) {
+    setAcceptDrops(true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAutoFillBackground(false);
 }
 
 void Canvas::setProject(Project* project) {
+    cancelCrop();
     m_project = project;
     m_selected = nullptr;
     zoomToFit();
@@ -34,12 +61,18 @@ void Canvas::setSelectedLayer(Layer* layer) {
 }
 
 void Canvas::setTool(ToolMode mode) {
+    if (m_dragging) endDrag();
+    m_panning = false;
+    cancelCrop();
     m_tool = mode;
+    setCursor(mode == ToolMode::Crop ? Qt::CrossCursor : mode == ToolMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
     update();
 }
 
 void Canvas::setZoom(double zoom) {
+    if (!std::isfinite(zoom)) return;
     m_zoom = std::clamp(zoom, 0.02, 40.0);
+    emit zoomChanged(m_zoom);
     update();
 }
 
@@ -49,8 +82,8 @@ void Canvas::zoomToFit() {
     if (cs.isEmpty() || width() <= 0 || height() <= 0) { m_zoom = 1.0; return; }
     double zx = (width() - 40) / double(cs.width());
     double zy = (height() - 40) / double(cs.height());
-    m_zoom = std::clamp(std::min(zx, zy), 0.02, 40.0);
     m_panOffset = {0, 0};
+    setZoom(std::min(zx, zy));
 }
 
 // ---------------- coordinate mapping ----------------
@@ -108,6 +141,7 @@ void Canvas::paintEvent(QPaintEvent*) {
 
     if (m_selected && (m_tool == ToolMode::Select || m_tool == ToolMode::FreeTransform))
         drawSelectionOverlay(painter);
+    if (m_tool == ToolMode::Crop) drawCropOverlay(painter);
 }
 
 void Canvas::drawSelectionOverlay(QPainter& painter) const {
@@ -214,9 +248,17 @@ Layer* Canvas::hitTestLayer(const QPointF& canvasPos) const {
 // ---------------- mouse interaction ----------------
 
 void Canvas::mousePressEvent(QMouseEvent* event) {
-    if (!m_project || event->button() != Qt::LeftButton) return;
-
-    if (m_tool == ToolMode::Pan) return; // panning handled by drag delta below via generic path
+    if (!m_project) return;
+    setFocus();
+    if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && m_tool == ToolMode::Pan)) {
+        m_panning = true;
+        m_panStartMouse = event->position();
+        m_panStartOffset = m_panOffset;
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+    if (event->button() != Qt::LeftButton) return;
+    if (m_tool == ToolMode::Crop) { beginCrop(event->position()); return; }
 
     Transform::TransformHandle handle = Transform::TransformHandle::None;
     if (m_selected && (m_tool == ToolMode::Select || m_tool == ToolMode::FreeTransform))
@@ -234,6 +276,12 @@ void Canvas::mousePressEvent(QMouseEvent* event) {
 }
 
 void Canvas::mouseMoveEvent(QMouseEvent* event) {
+    if (m_panning) {
+        m_panOffset = m_panStartOffset + event->position() - m_panStartMouse;
+        update();
+        return;
+    }
+    if (m_cropDragging) { updateCrop(event->position()); return; }
     if (m_dragging) {
         updateDrag(event->position(), event->modifiers());
         return;
@@ -242,11 +290,18 @@ void Canvas::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void Canvas::mouseReleaseEvent(QMouseEvent* event) {
-    Q_UNUSED(event);
+    if (m_panning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
+        m_panning = false;
+        setCursor(m_tool == ToolMode::Pan ? Qt::OpenHandCursor : m_tool == ToolMode::Crop ? Qt::CrossCursor : Qt::ArrowCursor);
+        return;
+    }
+    if (event->button() != Qt::LeftButton) return;
+    if (m_cropDragging) { updateCrop(event->position()); m_cropDragging = false; return; }
     if (m_dragging) endDrag();
 }
 
 void Canvas::wheelEvent(QWheelEvent* event) {
+    if (event->angleDelta().y() == 0 || m_cropDragging || m_dragging) return;
     double factor = event->angleDelta().y() > 0 ? 1.1 : (1.0 / 1.1);
     setZoom(m_zoom * factor);
 }
@@ -345,4 +400,141 @@ void Canvas::endDrag() {
         m_undoStack->push(cmd);
     }
     m_activeHandle = Transform::TransformHandle::None;
+}
+
+void Canvas::dragEnterEvent(QDragEnterEvent* event) {
+    if (m_project && event->possibleActions().testFlag(Qt::CopyAction)
+        && !droppedImagePaths(event->mimeData()).isEmpty()) {
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void Canvas::dragMoveEvent(QDragMoveEvent* event) {
+    if (m_project && event->possibleActions().testFlag(Qt::CopyAction)
+        && !droppedImagePaths(event->mimeData()).isEmpty()) {
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void Canvas::dropEvent(QDropEvent* event) {
+    const QStringList paths = droppedImagePaths(event->mimeData());
+    if (!m_project || !event->possibleActions().testFlag(Qt::CopyAction) || paths.isEmpty()) {
+        event->ignore();
+        return;
+    }
+    const QPointF position = widgetToCanvas(event->position());
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+    emit imageFilesDropped(paths, position);
+}
+
+void Canvas::contextMenuEvent(QContextMenuEvent* event) {
+    if (!m_project || m_dragging || m_cropDragging || m_panning) { event->ignore(); return; }
+    // Keyboard invocation targets the selection; mouse invocation targets the hit layer.
+    Layer* target = event->reason() == QContextMenuEvent::Keyboard
+        ? m_selected : hitTestLayer(widgetToCanvas(event->pos()));
+    const QPoint globalPosition = event->reason() == QContextMenuEvent::Keyboard
+        ? mapToGlobal(rect().center()) : event->globalPos();
+    emit layerContextMenuRequested(target, globalPosition);
+    event->accept();
+}
+
+
+void Canvas::setCropAspect(QSize aspect) {
+    m_cropAspect = aspect;
+    cancelCrop();
+}
+
+void Canvas::cancelCrop() {
+    m_cropDragging = false;
+    m_cropRect = {};
+    emit cropChanged(m_cropRect);
+    update();
+}
+
+void Canvas::applyCrop() {
+    if (!m_project || m_cropDragging || m_cropRect.isEmpty()) return;
+    const QRect crop = m_cropRect.intersected(QRect(QPoint(), m_project->canvasSize()));
+    cancelCrop();
+    if (!crop.isEmpty()) emit cropRequested(crop);
+}
+
+void Canvas::keyPressEvent(QKeyEvent* event) {
+    if (m_tool == ToolMode::Crop) {
+        if (event->key() == Qt::Key_Escape) { cancelCrop(); event->accept(); return; }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            applyCrop(); event->accept(); return;
+        }
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void Canvas::beginCrop(QPointF widgetPosition) {
+    m_cropDragging = true;
+    m_cropMoving = false;
+    m_cropStartRect = m_cropRect;
+    m_cropAnchor = widgetToCanvas(widgetPosition).toPoint();
+    if (!m_cropRect.isEmpty()) {
+        const QRectF r(m_cropRect);
+        const QPointF corners[] = {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()};
+        for (int i = 0; i < 4; ++i) {
+            if (QLineF(canvasToWidget(corners[i]), widgetPosition).length() <= 10.0) {
+                m_cropAnchor = corners[(i + 2) % 4].toPoint();
+                return;
+            }
+        }
+        if (r.contains(widgetToCanvas(widgetPosition))) { m_cropMoving = true; return; }
+    }
+    m_cropRect = {};
+    emit cropChanged(m_cropRect);
+    update();
+}
+
+void Canvas::updateCrop(QPointF widgetPosition) {
+    const QPoint point = widgetToCanvas(widgetPosition).toPoint();
+    if (m_cropMoving) {
+        QPoint origin = m_cropStartRect.topLeft() + point - m_cropAnchor;
+        origin.setX(std::clamp(origin.x(), 0, m_project->canvasSize().width() - m_cropStartRect.width()));
+        origin.setY(std::clamp(origin.y(), 0, m_project->canvasSize().height() - m_cropStartRect.height()));
+        m_cropRect = QRect(origin, m_cropStartRect.size());
+    } else {
+        m_cropRect = CropGeometry::fromDrag(m_cropAnchor, point, m_project->canvasSize(), m_cropAspect);
+    }
+    emit cropChanged(m_cropRect);
+    update();
+}
+
+void Canvas::drawCropOverlay(QPainter& painter) const {
+    if (m_cropRect.isEmpty()) return;
+    const QRectF bounds(canvasOrigin(), QSizeF(m_project->canvasSize()) * m_zoom);
+    const QRectF r(canvasToWidget(m_cropRect.topLeft()), QSizeF(m_cropRect.size()) * m_zoom);
+    painter.save();
+    QPainterPath shade;
+    shade.addRect(bounds);
+    shade.addRect(r);
+    painter.fillPath(shade, QColor(0, 0, 0, 145));
+    painter.setPen(QPen(Qt::white, 1.5));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(r);
+    painter.setPen(QPen(QColor(255, 255, 255, 150), 1, Qt::DashLine));
+    for (int i = 1; i < 3; ++i) {
+        painter.drawLine(QPointF(r.left() + r.width() * i / 3, r.top()), QPointF(r.left() + r.width() * i / 3, r.bottom()));
+        painter.drawLine(QPointF(r.left(), r.top() + r.height() * i / 3), QPointF(r.right(), r.top() + r.height() * i / 3));
+    }
+    painter.setPen(Qt::black);
+    painter.setBrush(Qt::white);
+    for (const QPointF& p : {r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()})
+        painter.drawRect(QRectF(p - QPointF(4, 4), QSizeF(8, 8)));
+    const QString label = QString("%1 × %2 px · Enter: Apply · Esc: Cancel").arg(m_cropRect.width()).arg(m_cropRect.height());
+    const QRectF textRect(r.left(), std::max(0.0, r.top() - 28), std::max(320.0, r.width()), 24);
+    painter.fillRect(textRect, QColor(0, 0, 0, 190));
+    painter.setPen(Qt::white);
+    painter.drawText(textRect.adjusted(5, 0, -5, 0), Qt::AlignVCenter, label);
+    painter.restore();
 }

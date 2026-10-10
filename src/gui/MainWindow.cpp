@@ -1,4 +1,12 @@
 #include "MainWindow.h"
+#include "ExportDialog.h"
+#include "../engine/ImageExport.h"
+#include "../engine/Filters.h"
+#include "../engine/CvSharpen.h"
+#include <opencv2/core/version.hpp>
+#include <QDoubleSpinBox>
+#include <QStatusBar>
+#include <exception>
 #include "../project/Commands.h"
 #include "../project/TextLayer.h"
 #include "../project/ShapeLayer.h"
@@ -7,6 +15,7 @@
 #include "../io/ProjectIO.h"
 
 #include <QMenuBar>
+#include <QMenu>
 #include <QToolBar>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -23,6 +32,10 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QMimeData>
+#include <QCloseEvent>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QSignalBlocker>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_project = std::make_unique<Project>(QSize(1920, 1080));
@@ -57,9 +70,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     syncPanelsFromProject();
     buildMenusAndToolbar();
     refreshTitle();
+    connect(m_undoStack, &QUndoStack::cleanChanged, this, &MainWindow::refreshTitle);
+    connect(m_undoStack, &QUndoStack::indexChanged, this, &MainWindow::refreshAfterCommand);
 
     // ---- wiring: canvas <-> panels <-> project ----
 
+    connect(m_canvas, &Canvas::cropRequested, this, &MainWindow::onCrop);
+    connect(m_canvas, &Canvas::layerContextMenuRequested, this, &MainWindow::showLayerContextMenu);
+    connect(m_layersPanel, &LayersPanel::layerContextMenuRequested, this, &MainWindow::showLayerContextMenu);
+    connect(m_canvas, &Canvas::imageFilesDropped, this, &MainWindow::importImages);
     connect(m_canvas, &Canvas::selectionChanged, this, &MainWindow::onCanvasSelectionChanged);
     connect(m_canvas, &Canvas::transformLiveChanged, this, [this](Layer*) {
         m_propertiesPanel->refreshFromLayer();
@@ -79,6 +98,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     connect(m_propertiesPanel, &PropertiesPanel::requestCanvasUpdate, m_canvas, qOverload<>(&QWidget::update));
     connect(m_photoPanel, &PhotoAdjustmentsPanel::requestCanvasUpdate, m_canvas, qOverload<>(&QWidget::update));
+}
+
+MainWindow::~MainWindow() {
+    // QObject deletes child widgets/stacks after MainWindow's members and derived
+    // type are gone. QUndoStack::clear() emits signals during destruction; those
+    // callbacks must not access this document or call MainWindow slots then.
+    for (QObject* child : findChildren<QObject*>())
+        QObject::disconnect(child, nullptr, this, nullptr);
+    m_undoStack->clear();
 }
 
 void MainWindow::buildMenusAndToolbar() {
@@ -124,6 +152,12 @@ void MainWindow::buildMenusAndToolbar() {
     layerMenu->addAction("Add Text Layer", this, &MainWindow::onAddTextLayer);
     layerMenu->addAction("Add Shape Layer", this, &MainWindow::onAddShapeLayer);
 
+    layerMenu->addAction("Duplicate Layer", this, [this] { onDuplicateLayer(m_canvas->selectedLayer()); }, QKeySequence("Ctrl+D"));
+    layerMenu->addAction("Delete Layer", this, [this] { onDeleteLayer(m_canvas->selectedLayer()); }, QKeySequence::Delete);
+
+    QMenu* canvasMenu = menuBar()->addMenu("&Canvas");
+    canvasMenu->addAction("Canvas Size...", this, &MainWindow::onResizeCanvas, QKeySequence("Ctrl+Alt+C"));
+
     // ---- Transform/Image menu ----
     QMenu* imageMenu = menuBar()->addMenu("&Transform");
     imageMenu->addAction("Flip Horizontal", this, &MainWindow::onFlipHorizontal, QKeySequence("Shift+H"));
@@ -137,6 +171,31 @@ void MainWindow::buildMenusAndToolbar() {
     connect(rotCCW, &QAction::triggered, this, [this] { onRotate90(false); });
 
     imageMenu->addAction("Reset Transform", this, &MainWindow::onResetTransform, QKeySequence("Ctrl+Shift+R"));
+
+    auto* filterMenu = menuBar()->addMenu("&Filter");
+    for (const QString& name : {QString("Grayscale"), QString("Invert"), QString("Sepia"),
+                               QString("Gaussian Blur..."), QString("Sharpen...")}) {
+        filterMenu->addAction(name, this, [this, name] { onFilter(name); });
+    }
+    connect(filterMenu, &QMenu::aboutToShow, this, [this, filterMenu] {
+        const Layer* layer = m_canvas->selectedLayer();
+        const bool enabled = layer && layer->type() == LayerType::Raster && !layer->locked && !layer->content.isNull();
+        for (auto* action : filterMenu->actions()) action->setEnabled(enabled);
+    });
+
+    auto* viewMenu = menuBar()->addMenu("&View");
+    viewMenu->addAction("Zoom to Fit", this, [this] { m_canvas->zoomToFit(); }, QKeySequence("Ctrl+0"));
+    viewMenu->addAction("Actual Size (100%)", this, [this] { m_canvas->setZoom(1.0); }, QKeySequence("Ctrl+1"));
+    viewMenu->addAction("Set Zoom...", this, [this] {
+        bool ok = false;
+        const double percent = QInputDialog::getDouble(this, "Set Zoom", "Zoom (%):",
+            m_canvas->zoom() * 100.0, 2, 4000, 1, &ok);
+        if (ok) m_canvas->setZoom(percent / 100.0);
+    });
+
+    auto* helpMenu = menuBar()->addMenu("&Help");
+    helpMenu->addAction("About NexImageEditor", this, &MainWindow::onAbout);
+    helpMenu->addAction("About Qt", qApp, &QApplication::aboutQt);
 
     // ---- Toolbar: tools + zoom ----
     QToolBar* toolbar = addToolBar("Tools");
@@ -160,6 +219,41 @@ void MainWindow::buildMenusAndToolbar() {
         if (on) m_canvas->setTool(ToolMode::Pan);
     });
 
+    auto* cropTool = toolbar->addAction("Crop");
+    cropTool->setObjectName("cropTool");
+    cropTool->setCheckable(true);
+    toolGroup->addAction(cropTool);
+    connect(cropTool, &QAction::toggled, this, [this](bool on) {
+        if (on) m_canvas->setTool(ToolMode::Crop);
+    });
+    for (const auto& pair : {qMakePair(selectTool, QString("V")), qMakePair(panTool, QString("H")),
+                             qMakePair(cropTool, QString("C"))}) {
+        pair.first->setShortcut(QKeySequence(pair.second));
+        pair.first->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        m_canvas->addAction(pair.first); // Single-letter tool keys never steal text input from panels.
+    }
+
+    auto* cropBar = addToolBar("Crop Options");
+    cropBar->setObjectName("cropOptions");
+    cropBar->setVisible(false);
+    auto* ratio = new QComboBox(cropBar);
+    ratio->setObjectName("cropAspect");
+    ratio->addItem("Free", QSize());
+    ratio->addItem("1:1", QSize(1, 1));
+    ratio->addItem("16:9", QSize(16, 9));
+    ratio->addItem("4:3", QSize(4, 3));
+    ratio->addItem("9:16", QSize(9, 16));
+    ratio->addItem("3:4", QSize(3, 4));
+    cropBar->addWidget(ratio);
+    connect(ratio, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, ratio] {
+        m_canvas->setCropAspect(ratio->currentData().toSize());
+    });
+    auto* applyCrop = cropBar->addAction("Apply Crop (Enter)", m_canvas, &Canvas::applyCrop);
+    applyCrop->setEnabled(false);
+    cropBar->addAction("Cancel (Esc)", m_canvas, &Canvas::cancelCrop);
+    connect(m_canvas, &Canvas::cropChanged, this, [applyCrop](QRect r) { applyCrop->setEnabled(!r.isEmpty()); });
+    connect(cropTool, &QAction::toggled, cropBar, &QWidget::setVisible);
+
     toolbar->addSeparator();
     QAction* zoomFit = toolbar->addAction("Zoom to Fit");
     connect(zoomFit, &QAction::triggered, this, [this] { m_canvas->zoomToFit(); m_canvas->update(); });
@@ -168,6 +262,21 @@ void MainWindow::buildMenusAndToolbar() {
     QAction* zoomOut = toolbar->addAction("Zoom Out");
     connect(zoomOut, &QAction::triggered, this, [this] { m_canvas->setZoom(m_canvas->zoom() / 1.25); });
 
+    auto* zoomPercent = new QDoubleSpinBox(toolbar);
+    zoomPercent->setObjectName("zoomPercent");
+    zoomPercent->setRange(2, 4000);
+    zoomPercent->setDecimals(1);
+    zoomPercent->setSuffix(" %");
+    zoomPercent->setKeyboardTracking(false);
+    zoomPercent->setValue(m_canvas->zoom() * 100);
+    toolbar->addWidget(zoomPercent);
+    connect(zoomPercent, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+        [this](double percent) { m_canvas->setZoom(percent / 100); });
+    connect(m_canvas, &Canvas::zoomChanged, this, [zoomPercent](double zoom) {
+        const QSignalBlocker blocker(zoomPercent);
+        zoomPercent->setValue(zoom * 100);
+    });
+
     toolbar->addSeparator();
     toolbar->addAction(undoAction);
     toolbar->addAction(redoAction);
@@ -175,7 +284,8 @@ void MainWindow::buildMenusAndToolbar() {
 
 void MainWindow::refreshTitle() {
     QString name = m_project->filePath.isEmpty() ? "Untitled" : QFileInfo(m_project->filePath).fileName();
-    setWindowTitle(QString("%1 — NexImageEditor").arg(name));
+    setWindowTitle(QString("%1[*] — NexImageEditor").arg(name));
+    setWindowModified(!m_undoStack->isClean());
 }
 
 void MainWindow::syncPanelsFromProject() {
@@ -202,8 +312,11 @@ void MainWindow::onNewProject() {
     int h = QInputDialog::getInt(this, "New Project", "Height:", 1080, 1, 20000, 1, &ok);
     if (!ok) return;
 
-    m_project = std::make_unique<Project>(QSize(w, h));
+    if (!maybeSave()) return;
+    m_canvas->setSelectedLayer(nullptr);
+    updateSelection(nullptr);
     m_undoStack->clear();
+    m_project = std::make_unique<Project>(QSize(w, h));
     m_canvas->setProject(m_project.get());
     syncPanelsFromProject();
     m_layersPanel->refresh();
@@ -213,15 +326,17 @@ void MainWindow::onNewProject() {
 
 void MainWindow::onOpenProject() {
     QString path = QFileDialog::getOpenFileName(this, "Open Project", QString(), "NexImageEditor Project (*.nxproj)");
-    if (path.isEmpty()) return;
+    if (path.isEmpty() || !maybeSave()) return;
 
     auto loaded = std::make_unique<Project>();
     if (!ProjectIO::loadProject(path, *loaded)) {
         QMessageBox::warning(this, "Open Project", "Could not read this project file.");
         return;
     }
-    m_project = std::move(loaded);
+    m_canvas->setSelectedLayer(nullptr);
+    updateSelection(nullptr);
     m_undoStack->clear();
+    m_project = std::move(loaded);
     m_canvas->setProject(m_project.get());
     syncPanelsFromProject();
     m_layersPanel->refresh();
@@ -233,6 +348,8 @@ void MainWindow::onSaveProject() {
     if (m_project->filePath.isEmpty()) { onSaveProjectAs(); return; }
     if (!ProjectIO::saveProject(m_project->filePath, *m_project))
         QMessageBox::warning(this, "Save Project", "Could not save the project.");
+    else
+        m_undoStack->setClean();
 }
 
 void MainWindow::onSaveProjectAs() {
@@ -246,6 +363,7 @@ void MainWindow::onSaveProjectAs() {
         return;
     }
     m_project->filePath = path;
+    m_undoStack->setClean();
     refreshTitle();
 }
 
@@ -254,74 +372,70 @@ void MainWindow::onImportImage() {
                                                  "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)");
     if (path.isEmpty()) return;
 
-    ImageBuffer buf = ImageIO::loadImage(path);
-    if (buf.isNull()) {
-        QMessageBox::warning(this, "Import Image", "Could not read this image file.");
-        return;
+    importImages({path}, QPointF(m_project->canvasSize().width() / 2.0,
+                                m_project->canvasSize().height() / 2.0));
+}
+
+void MainWindow::importImages(const QStringList& paths, QPointF position) {
+    QStringList failures;
+    Layer* lastImported = nullptr;
+    bool macroStarted = false;
+    for (const QString& path : paths) {
+        ImageBuffer buf = ImageIO::loadImage(path);
+        if (buf.isNull()) {
+            failures.append(QFileInfo(path).fileName());
+            continue;
+        }
+        // Do not create an empty undo entry when every file fails to load.
+        if (!macroStarted) {
+            m_undoStack->beginMacro(paths.size() > 1 ? "Import Images" : "Import Image");
+            macroStarted = true;
+        }
+        auto layer = std::make_unique<Layer>(LayerType::Raster, QFileInfo(path).baseName());
+        layer->content = buf.image();
+        layer->transform.center = position;
+        lastImported = layer.get();
+        m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(layer)));
     }
-
-    auto layer = std::make_unique<Layer>(LayerType::Raster, QFileInfo(path).baseName());
-    layer->content = buf.image();
-    // Center the imported image on the canvas by default.
-    layer->transform.center = QPointF(m_project->canvasSize().width() / 2.0,
-                                       m_project->canvasSize().height() / 2.0);
-
-    auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
-    m_undoStack->push(cmd);
-    m_layersPanel->refresh();
+    if (macroStarted) {
+        m_undoStack->endMacro();
+        m_canvas->setSelectedLayer(lastImported);
+        m_canvas->setFocus();
+    }
+    if (!failures.isEmpty()) {
+        auto* warning = new QMessageBox(QMessageBox::Warning, "Import Images",
+            "Could not read these image files:\n" + failures.join("\n"), QMessageBox::Ok, this);
+        warning->setTextFormat(Qt::PlainText);
+        warning->setAttribute(Qt::WA_DeleteOnClose);
+        warning->open();
+    }
 }
 
 void MainWindow::onExportImage() {
-    QDialog dialog(this);
-    dialog.setWindowTitle("Export Image");
-    auto* form = new QFormLayout(&dialog);
-
-    auto* formatCombo = new QComboBox(&dialog);
-    formatCombo->addItem("PNG (lossless)");
-    formatCombo->addItem("JPEG (lossy)");
-    formatCombo->addItem("WebP (lossy)");
-    form->addRow("Format", formatCombo);
-
-    auto* qualityRow = new QHBoxLayout();
-    auto* qualitySlider = new QSlider(Qt::Horizontal, &dialog);
-    qualitySlider->setRange(1, 100);
-    qualitySlider->setValue(90);
-    auto* qualityLabel = new QLabel("90", &dialog);
-    qualityRow->addWidget(qualitySlider);
-    qualityRow->addWidget(qualityLabel);
-    form->addRow("Quality", qualityRow);
-    connect(qualitySlider, &QSlider::valueChanged, &dialog, [qualityLabel](int v) {
-        qualityLabel->setText(QString::number(v));
-    });
-
-    auto updateQualityEnabled = [formatCombo, qualitySlider] {
-        qualitySlider->setEnabled(formatCombo->currentIndex() != 0); // PNG is lossless, no quality knob
-    };
-    connect(formatCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [updateQualityEnabled](int) {
-        updateQualityEnabled();
-    });
-    updateQualityEnabled();
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
+    if (!ImageExport::validSize(m_project->canvasSize())) {
+        QMessageBox::warning(this, "Export Image", "The source canvas exceeds the 100 megapixel export safety limit.");
+        return;
+    }
+    ExportDialog dialog(m_project->canvasSize(), this);
     if (dialog.exec() != QDialog::Accepted) return;
-
-    int formatIndex = formatCombo->currentIndex();
-    QString ext = formatIndex == 0 ? "png" : formatIndex == 1 ? "jpg" : "webp";
-    QString filter = formatIndex == 0 ? "PNG (*.png)" : formatIndex == 1 ? "JPEG (*.jpg *.jpeg)" : "WebP (*.webp)";
-
-    QString path = QFileDialog::getSaveFileName(this, "Export Image", "export." + ext, filter);
+    const QByteArray format = dialog.format();
+    const QString extension = QString::fromLatin1(format);
+    const QString filter = format == "png" ? "PNG (*.png)" : format == "jpg" ? "JPEG (*.jpg *.jpeg)" : "WebP (*.webp)";
+    QString path = QFileDialog::getSaveFileName(this, "Export Image", "export." + extension, filter);
     if (path.isEmpty()) return;
-    if (QFileInfo(path).suffix().isEmpty()) path += "." + ext;
-
-    int quality = (formatIndex == 0) ? -1 : qualitySlider->value();
-
-    ImageBuffer flat = m_project->flatten();
-    if (!ImageIO::saveImage(path, flat, quality))
-        QMessageBox::warning(this, "Export Image", "Could not write this image file.");
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix != extension && !(format == "jpg" && suffix == "jpeg")) {
+        path += "." + extension;
+        // The native chooser only confirmed the typed name, not this normalized one.
+        if (QFileInfo::exists(path) && QMessageBox::question(this, "Replace File?",
+            "The output file already exists. Replace it?", QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    }
+    const ImageBuffer result = ImageExport::prepare(m_project->flatten(), dialog.outputSize(),
+        dialog.interpolation(), dialog.transparent(), dialog.background());
+    if (result.isNull() || !ImageIO::saveImage(path, result, dialog.quality(), format))
+        QMessageBox::warning(this, "Export Image", "Could not export the image. Check the format plugin, memory, and destination permissions.");
+    else
+        statusBar()->showMessage(QString("Exported %1 × %2 pixels").arg(result.width()).arg(result.height()), 5000);
 }
 
 // ---------------- Layer actions ----------------
@@ -338,7 +452,6 @@ void MainWindow::onAddTextLayer() {
                                        m_project->canvasSize().height() / 2.0);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onAddShapeLayer() {
@@ -347,7 +460,6 @@ void MainWindow::onAddShapeLayer() {
                                        m_project->canvasSize().height() / 2.0);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(layer));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onDeleteLayer(Layer* layer) {
@@ -356,7 +468,6 @@ void MainWindow::onDeleteLayer(Layer* layer) {
     if (idx < 0) return;
     if (m_canvas->selectedLayer() == layer) m_canvas->setSelectedLayer(nullptr);
     m_undoStack->push(new RemoveLayerCommand(m_project.get(), idx));
-    m_layersPanel->refresh();
     updateSelection(nullptr);
 }
 
@@ -367,7 +478,6 @@ void MainWindow::onDuplicateLayer(Layer* layer) {
     copy->transform.center += QPointF(20, 20);
     auto* cmd = new AddLayerCommand(m_project.get(), std::move(copy));
     m_undoStack->push(cmd);
-    m_layersPanel->refresh();
 }
 
 void MainWindow::onCopyLayer(Layer* layer) {
@@ -386,7 +496,6 @@ void MainWindow::onPasteLayer() {
     Layer* raw = copy.get();
 
     m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(copy)));
-    m_layersPanel->refresh();
     m_canvas->setSelectedLayer(raw);
     m_layersPanel->selectLayer(raw);
     updateSelection(raw);
@@ -423,7 +532,6 @@ void MainWindow::onPasteImageFromSystemClipboard() {
     Layer* raw = layer.get();
 
     m_undoStack->push(new AddLayerCommand(m_project.get(), std::move(layer)));
-    m_layersPanel->refresh();
     m_canvas->setSelectedLayer(raw);
     m_layersPanel->selectLayer(raw);
     updateSelection(raw);
@@ -433,8 +541,7 @@ void MainWindow::onMoveLayerUp(Layer* layer) {
     if (!layer) return;
     int idx = m_project->indexOf(layer);
     if (idx < 0 || idx == m_project->layerCount() - 1) return;
-    m_project->moveLayer(idx, idx + 1); // not undo-tracked for simplicity
-    m_layersPanel->refresh();
+    m_undoStack->push(new MoveLayerCommand(m_project.get(), idx, idx + 1));
     m_layersPanel->selectLayer(layer);
 }
 
@@ -442,15 +549,16 @@ void MainWindow::onMoveLayerDown(Layer* layer) {
     if (!layer) return;
     int idx = m_project->indexOf(layer);
     if (idx <= 0) return;
-    m_project->moveLayer(idx, idx - 1);
-    m_layersPanel->refresh();
+    m_undoStack->push(new MoveLayerCommand(m_project.get(), idx, idx - 1));
     m_layersPanel->selectLayer(layer);
 }
 
 void MainWindow::onLayerVisibilityToggled(Layer* layer, bool visible) {
     if (!layer) return;
-    layer->visible = visible;
-    m_canvas->update();
+    if (layer->visible == visible) return;
+    m_undoStack->push(new SetLayerPropertyCommand<bool>(m_project.get(), layer->id(),
+        layer->visible, visible, [](Layer* l) { return l->visible; },
+        [](Layer* l, bool v) { l->visible = v; }, "Change Layer Visibility"));
 }
 
 void MainWindow::onLayerSelectedInPanel(Layer* layer) {
@@ -511,4 +619,171 @@ void MainWindow::onResetTransform() {
     m_undoStack->push(new TransformLayerCommand(m_project.get(), l->id(), before, after));
     m_propertiesPanel->refreshFromLayer();
     m_canvas->update();
+}
+
+
+bool MainWindow::maybeSave() {
+    if (m_undoStack->isClean()) return true;
+    const auto answer = QMessageBox::warning(this, "Unsaved Changes",
+        "Save changes to this project before continuing?",
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) return false;
+    if (answer == QMessageBox::Discard) return true;
+    onSaveProject();
+    return m_undoStack->isClean(); // A cancelled or failed save must not discard work.
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (maybeSave()) event->accept();
+    else event->ignore();
+}
+
+void MainWindow::refreshAfterCommand() {
+    m_canvas->cancelCrop();
+    Layer* selected = m_canvas->selectedLayer();
+    if (m_project->indexOf(selected) < 0) {
+        selected = nullptr;
+        m_canvas->setSelectedLayer(nullptr);
+        updateSelection(nullptr);
+    }
+    // Restoring the same selection is UI bookkeeping, not a user selection.
+    const QSignalBlocker blockSelection(m_layersPanel);
+    m_layersPanel->refresh();
+    m_layersPanel->selectLayer(selected);
+    m_propertiesPanel->refreshFromLayer();
+    m_photoPanel->refreshFromLayer();
+    m_canvas->update();
+}
+
+void MainWindow::onResizeCanvas() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Canvas Size");
+    auto* form = new QFormLayout(&dialog);
+    auto* width = new QSpinBox(&dialog);
+    auto* height = new QSpinBox(&dialog);
+    width->setRange(1, 20000);
+    height->setRange(1, 20000);
+    width->setValue(m_project->canvasSize().width());
+    height->setValue(m_project->canvasSize().height());
+    form->addRow("Width (px)", width);
+    form->addRow("Height (px)", height);
+    auto* centered = new QCheckBox("Keep artwork centered", &dialog);
+    centered->setChecked(true);
+    form->addRow(centered);
+    form->addRow(new QLabel("Changes canvas bounds only; layers are not resampled or deleted.", &dialog));
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QSize size(width->value(), height->value());
+    if (size == m_project->canvasSize()) return;
+    m_undoStack->push(new ResizeCanvasCommand(m_project.get(), size, centered->isChecked()));
+    m_canvas->zoomToFit();
+    m_canvas->update();
+}
+
+
+void MainWindow::showLayerContextMenu(Layer* layer, QPoint globalPosition) {
+    if (m_project->indexOf(layer) < 0) layer = nullptr;
+    m_canvas->setSelectedLayer(layer);
+    m_layersPanel->selectLayer(layer);
+    updateSelection(layer);
+
+    QMenu menu(this);
+    menu.setObjectName("layerContextMenu");
+    // A history change invalidates the menu's snapshot (and potentially its layer).
+    connect(m_undoStack, &QUndoStack::indexChanged, &menu, &QMenu::close);
+    menu.addAction(m_undoStack->createUndoAction(&menu, "Undo"));
+    menu.addAction(m_undoStack->createRedoAction(&menu, "Redo"));
+    menu.addSeparator();
+    auto* copy = menu.addAction("Copy Layer", this, [this, layer] { onCopyLayer(layer); });
+    copy->setEnabled(layer != nullptr);
+    auto* paste = menu.addAction("Paste Layer", this, &MainWindow::onPasteLayer);
+    paste->setEnabled(m_layerClipboard != nullptr);
+    auto* systemPaste = menu.addAction("Paste Image from System Clipboard", this,
+                                      &MainWindow::onPasteImageFromSystemClipboard);
+    const QMimeData* mime = QApplication::clipboard()->mimeData();
+    systemPaste->setEnabled(mime && mime->hasImage());
+    menu.addSeparator();
+    auto* duplicate = menu.addAction("Duplicate Layer", this, [this, layer] { onDuplicateLayer(layer); });
+    duplicate->setEnabled(layer != nullptr);
+    auto* remove = menu.addAction("Delete Layer", this, [this, layer] { onDeleteLayer(layer); });
+    remove->setEnabled(layer != nullptr);
+    auto* visibility = menu.addAction(layer && !layer->visible ? "Show Layer" : "Hide Layer", this,
+        [this, layer] { if (layer) onLayerVisibilityToggled(layer, !layer->visible); });
+    visibility->setEnabled(layer != nullptr);
+    auto* up = menu.addAction("Move Layer Up", this, [this, layer] { onMoveLayerUp(layer); });
+    auto* down = menu.addAction("Move Layer Down", this, [this, layer] { onMoveLayerDown(layer); });
+    const int index = m_project->indexOf(layer);
+    up->setEnabled(index >= 0 && index < m_project->layerCount() - 1);
+    down->setEnabled(index > 0);
+
+    auto* transform = menu.addMenu("Transform");
+    transform->setEnabled(layer && !layer->locked);
+    transform->addAction("Flip Horizontal", this, &MainWindow::onFlipHorizontal);
+    transform->addAction("Flip Vertical", this, &MainWindow::onFlipVertical);
+    transform->addAction("Rotate 90° CW", this, [this] { onRotate90(true); });
+    transform->addAction("Rotate 90° CCW", this, [this] { onRotate90(false); });
+    transform->addAction("Reset Transform", this, &MainWindow::onResetTransform);
+
+    menu.addSeparator();
+    menu.addAction("Import Image...", this, &MainWindow::onImportImage);
+    menu.addAction("Add Text Layer...", this, &MainWindow::onAddTextLayer);
+    menu.addAction("Add Shape Layer", this, &MainWindow::onAddShapeLayer);
+    menu.addSeparator();
+    menu.addAction("Zoom to Fit", this, [this] { m_canvas->zoomToFit(); m_canvas->update(); });
+    menu.exec(globalPosition);
+}
+
+
+void MainWindow::onAbout() {
+    QMessageBox::about(this, "About NexImageEditor",
+        QString("<h2>NexImageEditor</h2><p>Development build · Layer-based image editor</p>"
+                "<p>Copyright © 2026 NexImageEditor contributors.<br>Application license: MIT.</p>"
+                "<p>Built with Qt %1 and OpenCV %2 (separate open-source licenses).</p>"
+                "<p><a href=\"https://github.com/Nex-Editor-team/NexImageEditor\">Project, source code and issues</a></p>"
+                "<p>Provided without warranty. See LICENSE in the source repository.</p>")
+            .arg(QString::fromLatin1(qVersion()), QString::fromLatin1(CV_VERSION)));
+}
+
+void MainWindow::onCrop(QRect rect) {
+    const QRect bounds(QPoint(), m_project->canvasSize());
+    rect = rect.intersected(bounds);
+    if (rect.isEmpty() || rect == bounds) return;
+    m_undoStack->push(new CropCanvasCommand(m_project.get(), rect));
+    m_canvas->zoomToFit();
+}
+
+void MainWindow::onFilter(const QString& name) {
+    Layer* layer = m_canvas->selectedLayer();
+    if (!layer || layer->type() != LayerType::Raster || layer->locked || layer->content.isNull()) return;
+    double amount = 1.0;
+    if (name == "Gaussian Blur..." || name == "Sharpen...") {
+        bool ok = false;
+        const bool blur = name == "Gaussian Blur...";
+        amount = QInputDialog::getDouble(this, name, blur ? "Gaussian sigma (pixels):" : "Sharpen amount:",
+            blur ? 2.0 : 1.0, 0.1, blur ? 100.0 : 5.0, 1, &ok);
+        if (!ok) return;
+    }
+    const QImage before = layer->content;
+    ImageBuffer after;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    try {
+        const ImageBuffer src(before);
+        if (name == "Grayscale") after = Filters::grayscale(src);
+        else if (name == "Invert") after = Filters::invert(src);
+        else if (name == "Sepia") after = Filters::sepia(src);
+        else if (name == "Gaussian Blur...") after = Filters::gaussianBlur(src, amount);
+        else if (name == "Sharpen...") after = CvSharpen::unsharpMask(src, amount, 2.0, 0);
+    } catch (const std::exception&) { after = {}; }
+    QApplication::restoreOverrideCursor();
+    if (after.isNull()) {
+        QMessageBox::warning(this, "Filter", "Could not apply the filter. The layer was not changed.");
+        return;
+    }
+    if (after.image() == before) return;
+    m_undoStack->push(new SetLayerPropertyCommand<QImage>(m_project.get(), layer->id(), before, after.image(),
+        [](Layer* l) { return l->content; },
+        [](Layer* l, QImage image) { l->content = image; l->applyAdjustments(); }, name));
 }

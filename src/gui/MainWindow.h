@@ -13,6 +13,10 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void onNewProject();
@@ -21,6 +25,10 @@ private slots:
     void onSaveProjectAs();
     void onImportImage();
     void onExportImage();
+    void onResizeCanvas();
+    void onAbout();
+    void onFilter(const QString& name);
+    void onCrop(QRect rect);
 
     void onAddRasterLayer();
     void onAddTextLayer();
@@ -43,8 +51,12 @@ private slots:
     void onResetTransform();
 
 private:
+    void showLayerContextMenu(Layer* layer, QPoint globalPosition);
+    void importImages(const QStringList& paths, QPointF position);
     void buildMenusAndToolbar();
     void refreshTitle();
+    bool maybeSave();
+    void refreshAfterCommand();
     void syncPanelsFromProject();
     void updateSelection(Layer* layer); // shows/hides Properties & Adjustments dock + syncs panels
 
