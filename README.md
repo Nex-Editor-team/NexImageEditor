@@ -105,3 +105,18 @@ không hỗ trợ bị bỏ qua. Nếu ảnh lỗi hoặc thiếu plugin giải 
 báo tên tệp không đọc được; các ảnh hợp lệ trong lần thả vẫn được nhập.
 `DragDropTests` kiểm tra thả nhiều ảnh, vị trí theo zoom, Undo/Redo, từ chối
 URL/thư mục/văn bản và trường hợp tệp ảnh hỏng.
+
+
+## Menu chuột phải
+
+- Chuột phải trên canvas: chọn layer trên cùng tại vị trí bấm và mở menu thao tác.
+- Chuột phải trong danh sách Layers: thao tác với đúng layer ở hàng được bấm,
+  kể cả layer đang ẩn. Chuột phải vùng trống sẽ bỏ chọn layer.
+- Menu gồm Undo/Redo, Copy/Paste layer, dán ảnh từ clipboard hệ thống, nhân đôi,
+  xóa, ẩn/hiện, lên/xuống một bậc, lật/xoay/reset transform, thêm ảnh/chữ/hình
+  và Zoom to Fit. Các thao tác chỉnh sửa dùng chung lịch sử Undo hiện có.
+- Các mục phụ thuộc layer hoặc clipboard tự vô hiệu hóa khi không khả dụng.
+  Nhấn phím Menu hoặc Shift+F10 trên canvas mở menu cho layer đang chọn;
+  Esc đóng menu mà không chỉnh sửa nội dung.
+- `ContextMenuTests` kiểm tra chọn đúng layer, trạng thái các mục, thao tác
+  nhân đôi/ẩn/dán và Undo, cùng menu trên vùng trống và mở bằng bàn phím.

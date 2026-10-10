@@ -8,6 +8,7 @@
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class QContextMenuEvent;
 #include "../project/Project.h"
 #include "../engine/Transform.h"
 
@@ -36,11 +37,13 @@ public:
     void zoomToFit();
 
 signals:
+    void layerContextMenuRequested(Layer* layer, QPoint globalPosition);
     void imageFilesDropped(const QStringList& paths, QPointF canvasPosition);
     void selectionChanged(Layer* layer);
     void transformLiveChanged(Layer* layer); // fired continuously while dragging (for Properties panel)
 
 protected:
+    void contextMenuEvent(QContextMenuEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
     void dropEvent(QDropEvent* event) override;

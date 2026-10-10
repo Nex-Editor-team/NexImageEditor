@@ -7,6 +7,7 @@
 #include "../io/ProjectIO.h"
 
 #include <QMenuBar>
+#include <QMenu>
 #include <QToolBar>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -66,6 +67,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // ---- wiring: canvas <-> panels <-> project ----
 
+    connect(m_canvas, &Canvas::layerContextMenuRequested, this, &MainWindow::showLayerContextMenu);
+    connect(m_layersPanel, &LayersPanel::layerContextMenuRequested, this, &MainWindow::showLayerContextMenu);
     connect(m_canvas, &Canvas::imageFilesDropped, this, &MainWindow::importImages);
     connect(m_canvas, &Canvas::selectionChanged, this, &MainWindow::onCanvasSelectionChanged);
     connect(m_canvas, &Canvas::transformLiveChanged, this, [this](Layer*) {
@@ -610,4 +613,57 @@ void MainWindow::onResizeCanvas() {
     m_undoStack->push(new ResizeCanvasCommand(m_project.get(), size, centered->isChecked()));
     m_canvas->zoomToFit();
     m_canvas->update();
+}
+
+
+void MainWindow::showLayerContextMenu(Layer* layer, QPoint globalPosition) {
+    if (m_project->indexOf(layer) < 0) layer = nullptr;
+    m_canvas->setSelectedLayer(layer);
+    m_layersPanel->selectLayer(layer);
+    updateSelection(layer);
+
+    QMenu menu(this);
+    menu.setObjectName("layerContextMenu");
+    // A history change invalidates the menu's snapshot (and potentially its layer).
+    connect(m_undoStack, &QUndoStack::indexChanged, &menu, &QMenu::close);
+    menu.addAction(m_undoStack->createUndoAction(&menu, "Undo"));
+    menu.addAction(m_undoStack->createRedoAction(&menu, "Redo"));
+    menu.addSeparator();
+    auto* copy = menu.addAction("Copy Layer", this, [this, layer] { onCopyLayer(layer); });
+    copy->setEnabled(layer != nullptr);
+    auto* paste = menu.addAction("Paste Layer", this, &MainWindow::onPasteLayer);
+    paste->setEnabled(m_layerClipboard != nullptr);
+    auto* systemPaste = menu.addAction("Paste Image from System Clipboard", this,
+                                      &MainWindow::onPasteImageFromSystemClipboard);
+    const QMimeData* mime = QApplication::clipboard()->mimeData();
+    systemPaste->setEnabled(mime && mime->hasImage());
+    menu.addSeparator();
+    auto* duplicate = menu.addAction("Duplicate Layer", this, [this, layer] { onDuplicateLayer(layer); });
+    duplicate->setEnabled(layer != nullptr);
+    auto* remove = menu.addAction("Delete Layer", this, [this, layer] { onDeleteLayer(layer); });
+    remove->setEnabled(layer != nullptr);
+    auto* visibility = menu.addAction(layer && !layer->visible ? "Show Layer" : "Hide Layer", this,
+        [this, layer] { if (layer) onLayerVisibilityToggled(layer, !layer->visible); });
+    visibility->setEnabled(layer != nullptr);
+    auto* up = menu.addAction("Move Layer Up", this, [this, layer] { onMoveLayerUp(layer); });
+    auto* down = menu.addAction("Move Layer Down", this, [this, layer] { onMoveLayerDown(layer); });
+    const int index = m_project->indexOf(layer);
+    up->setEnabled(index >= 0 && index < m_project->layerCount() - 1);
+    down->setEnabled(index > 0);
+
+    auto* transform = menu.addMenu("Transform");
+    transform->setEnabled(layer && !layer->locked);
+    transform->addAction("Flip Horizontal", this, &MainWindow::onFlipHorizontal);
+    transform->addAction("Flip Vertical", this, &MainWindow::onFlipVertical);
+    transform->addAction("Rotate 90° CW", this, [this] { onRotate90(true); });
+    transform->addAction("Rotate 90° CCW", this, [this] { onRotate90(false); });
+    transform->addAction("Reset Transform", this, &MainWindow::onResetTransform);
+
+    menu.addSeparator();
+    menu.addAction("Import Image...", this, &MainWindow::onImportImage);
+    menu.addAction("Add Text Layer...", this, &MainWindow::onAddTextLayer);
+    menu.addAction("Add Shape Layer", this, &MainWindow::onAddShapeLayer);
+    menu.addSeparator();
+    menu.addAction("Zoom to Fit", this, [this] { m_canvas->zoomToFit(); m_canvas->update(); });
+    menu.exec(globalPosition);
 }

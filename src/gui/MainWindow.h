@@ -47,6 +47,7 @@ private slots:
     void onResetTransform();
 
 private:
+    void showLayerContextMenu(Layer* layer, QPoint globalPosition);
     void importImages(const QStringList& paths, QPointF position);
     void buildMenusAndToolbar();
     void refreshTitle();

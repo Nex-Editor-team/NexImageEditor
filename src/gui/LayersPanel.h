@@ -13,6 +13,7 @@ public:
     void selectLayer(Layer* layer);
 
 signals:
+    void layerContextMenuRequested(Layer* layer, QPoint globalPosition);
     void layerSelected(Layer* layer);
     void addRasterRequested();
     void addTextRequested();

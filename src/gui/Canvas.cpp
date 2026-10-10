@@ -1,6 +1,7 @@
 #include "Canvas.h"
 #include "../project/Commands.h"
 #include <QPainter>
+#include <QContextMenuEvent>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
@@ -399,4 +400,15 @@ void Canvas::dropEvent(QDropEvent* event) {
     event->setDropAction(Qt::CopyAction);
     event->accept();
     emit imageFilesDropped(paths, position);
+}
+
+void Canvas::contextMenuEvent(QContextMenuEvent* event) {
+    if (!m_project || m_dragging) { event->ignore(); return; }
+    // Keyboard invocation targets the selection; mouse invocation targets the hit layer.
+    Layer* target = event->reason() == QContextMenuEvent::Keyboard
+        ? m_selected : hitTestLayer(widgetToCanvas(event->pos()));
+    const QPoint globalPosition = event->reason() == QContextMenuEvent::Keyboard
+        ? mapToGlobal(rect().center()) : event->globalPos();
+    emit layerContextMenuRequested(target, globalPosition);
+    event->accept();
 }
