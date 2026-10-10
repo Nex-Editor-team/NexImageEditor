@@ -92,9 +92,10 @@ void testCanvasOps() {
     ops::cropDocument(d, IRect{1, 1, 3, 4});
     CHECK(d.width() == 3 && d.height() == 4);
 
+    // Canvas 3x4 -> 6x8 scales the layer content by the same factor (2x): 6x10 -> 12x20.
     ops::resizeImage(d, 6, 8);
     CHECK(d.width() == 6 && d.height() == 8);
-    CHECK(d.layers()[0].w() == 6 && d.layers()[0].h() == 8);
+    CHECK(d.layers()[0].w() == 12 && d.layers()[0].h() == 20);
 }
 
 void testTransformLayer() {

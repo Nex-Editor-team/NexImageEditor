@@ -13,6 +13,18 @@
           "message": 5
         }
       ]
+    },
+    {
+      "owner": "nex-test",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(.+?):(\\d+): CHECK failed: (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        }
+      ]
     }
   ]
 }
