@@ -25,14 +25,6 @@ void TransformLayerCommand::redo() {
     if (Layer* l = findLayer()) l->transform = m_after;
 }
 
-bool TransformLayerCommand::mergeWith(const QUndoCommand* other) {
-    if (other->id() != id()) return false;
-    const auto* o = static_cast<const TransformLayerCommand*>(other);
-    if (o->m_layerId != m_layerId) return false;
-    m_after = o->m_after; // extend this drag's end state
-    return true;
-}
-
 // ---- AddLayerCommand ----
 
 AddLayerCommand::AddLayerCommand(Project* project, std::unique_ptr<Layer> layer, int index, QUndoCommand* parent)

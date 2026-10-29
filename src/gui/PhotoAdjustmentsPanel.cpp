@@ -196,11 +196,14 @@ void PhotoAdjustmentsPanel::connectSliderRow(
         if (m_layer) m_savedBeforeParams = m_layer->adjustments;
     });
 
-    connect(row.slider, &QSlider::valueChanged, this, [this, &row, onLiveChange](int v) {
+    connect(row.slider, &QSlider::valueChanged, this, [this, &row, onLiveChange, onCommit](int v) {
         updateValueLabel(row, v);
         if (!m_updatingUi && m_layer) {
+            // Keyboard and groove clicks do not emit sliderPressed/Released.
+            if (!row.slider->isSliderDown()) m_savedBeforeParams = m_layer->adjustments;
             onLiveChange(v * row.scale);
             applyLiveAdjustments();
+            if (!row.slider->isSliderDown()) onCommit();
         }
     });
 
@@ -378,7 +381,19 @@ void PhotoAdjustmentsPanel::buildUi() {
     m_profileAmountSlider = new QSlider(Qt::Horizontal, profileContainer);
     m_profileAmountSlider->setRange(0, 200);
     m_profileAmountSlider->setValue(100);
-    connect(m_profileAmountSlider, &QSlider::valueChanged, this, &PhotoAdjustmentsPanel::onProfileAmountChanged);
+    connect(m_profileAmountSlider, &QSlider::sliderPressed, this, [this] {
+        if (m_layer) m_savedBeforeParams = m_layer->adjustments;
+    });
+    connect(m_profileAmountSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (!m_updatingUi && m_layer && !m_profileAmountSlider->isSliderDown())
+            m_savedBeforeParams = m_layer->adjustments;
+        onProfileAmountChanged(value);
+        if (!m_updatingUi && m_layer && !m_profileAmountSlider->isSliderDown())
+            pushUndoCommand("Change Preset Amount");
+    });
+    connect(m_profileAmountSlider, &QSlider::sliderReleased, this, [this] {
+        if (!m_updatingUi && m_layer) pushUndoCommand("Change Preset Amount");
+    });
     profileLayout->addWidget(m_profileAmountSlider);
 
     root->addWidget(profileContainer);
@@ -761,25 +776,16 @@ void PhotoAdjustmentsPanel::onResetAllClicked() {
 
 void PhotoAdjustmentsPanel::onBakeClicked() {
     if (!m_layer || m_layer->adjustments.isIdentity()) return;
-
     QImage before = m_layer->content;
+    ToneParameters beforeTone = m_layer->adjustments;
+    // The preview may be disabled, so make sure the adjusted cache is current.
+    m_layer->applyAdjustments();
     m_layer->bakeAdjustments();
     QImage after = m_layer->content;
-
+    if (m_undoStack)
+        m_undoStack->push(new BakeAdjustmentsCommand(m_project, m_layer->id(), before, beforeTone, after));
     refreshFromLayer();
     applyLiveAdjustments();
-
-    if (m_undoStack) {
-        auto* cmd = new SetLayerPropertyCommand<QImage>(
-            m_project, m_layer->id(), before, after,
-            [](Layer* l) { return l->content; },
-            [](Layer* l, QImage val) {
-                l->content = val;
-                l->applyAdjustments();
-            },
-            "Bake Photo Adjustments");
-        m_undoStack->push(cmd);
-    }
 }
 
 void PhotoAdjustmentsPanel::onCopyAdjustments() {

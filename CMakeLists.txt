@@ -43,7 +43,7 @@ endif()
 file(GLOB_RECURSE NEX_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 file(GLOB_RECURSE NEX_HEADERS CONFIGURE_DEPENDS src/*.h)
 
-add_executable(NexImageEditor ${NEX_SOURCES} ${NEX_HEADERS})
+add_executable(NexImageEditor ${NEX_SOURCES} ${NEX_HEADERS} resources.qrc)
 
 target_include_directories(NexImageEditor PRIVATE
     src

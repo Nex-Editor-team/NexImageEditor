@@ -4,45 +4,43 @@
 #include <QToolButton>
 #include <QLabel>
 #include <QVariant>
+#include <QSignalBlocker>
+#include <QIcon>
+#include <QPixmap>
 
 LayersPanel::LayersPanel(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(4, 4, 4, 4);
-
-    layout->addWidget(new QLabel("<b>Layers</b>"));
-
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    auto* heading = new QLabel("    LAYERS", this);
+    heading->setMinimumHeight(38);
+    heading->setStyleSheet("font-weight: 600; border-bottom: 1px solid #414245;");
+    layout->addWidget(heading);
     m_list = new QListWidget(this);
+    m_list->setIconSize(QSize(36, 36));
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(m_list, 1);
 
-    auto* addRow = new QHBoxLayout();
-    auto* addRaster = new QToolButton(this); addRaster->setText("+Img");
-    auto* addText = new QToolButton(this);   addText->setText("+Text");
-    auto* addShape = new QToolButton(this);  addShape->setText("+Shape");
-    addRow->addWidget(addRaster);
-    addRow->addWidget(addText);
-    addRow->addWidget(addShape);
-    layout->addLayout(addRow);
-
-    auto* editRow = new QHBoxLayout();
-    auto* up = new QToolButton(this);     up->setText("▲");
-    auto* down = new QToolButton(this);   down->setText("▼");
-    auto* dup = new QToolButton(this);    dup->setText("Duplicate");
-    auto* del = new QToolButton(this);    del->setText("Delete");
-    editRow->addWidget(up);
-    editRow->addWidget(down);
-    editRow->addWidget(dup);
-    editRow->addWidget(del);
-    layout->addLayout(editRow);
-
-    // Copy/Paste "trong" app (khác Duplicate: Copy giữ lại trong clipboard
-    // nội bộ nên có thể Paste nhiều lần, kể cả sau khi đổi layer đang chọn).
-    auto* copyPasteRow = new QHBoxLayout();
-    auto* copyBtn = new QToolButton(this);  copyBtn->setText("Copy");
-    auto* pasteBtn = new QToolButton(this); pasteBtn->setText("Paste");
-    copyPasteRow->addWidget(copyBtn);
-    copyPasteRow->addWidget(pasteBtn);
-    layout->addLayout(copyPasteRow);
+    auto* row = new QHBoxLayout();
+    row->setContentsMargins(8, 5, 8, 5);
+    row->setSpacing(2);
+    auto makeButton = [this, row](const QString& text, const QString& tip) {
+        auto* button = new QToolButton(this);
+        button->setText(text); button->setToolTip(tip);
+        row->addWidget(button);
+        return button;
+    };
+    auto* addRaster = makeButton("▧", "Add image layer");
+    auto* addText = makeButton("T", "Add text layer");
+    auto* addShape = makeButton("▱", "Add shape layer");
+    row->addStretch();
+    auto* up = makeButton("↑", "Move layer up");
+    auto* down = makeButton("↓", "Move layer down");
+    auto* dup = makeButton("▣", "Duplicate layer");
+    auto* del = makeButton("×", "Delete layer");
+    auto* copyBtn = makeButton("⎘", "Copy layer");
+    auto* pasteBtn = makeButton("▤", "Paste layer");
+    layout->addLayout(row);
 
     connect(addRaster, &QToolButton::clicked, this, &LayersPanel::addRasterRequested);
     connect(addText, &QToolButton::clicked, this, &LayersPanel::addTextRequested);
@@ -90,7 +88,13 @@ void LayersPanel::refresh() {
         const auto& layers = m_project->layers();
         for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
             Layer* l = it->get();
-            auto* item = new QListWidgetItem(l->name);
+            QString type = l->type() == LayerType::Raster ? "Image" : l->type() == LayerType::Text ? "Text" : "Shape";
+            auto* item = new QListWidgetItem(l->name + "\n" + type);
+            item->setSizeHint(QSize(0, 50));
+            if (!l->displayContent().isNull()) {
+                QPixmap thumbnail = QPixmap::fromImage(l->displayContent().scaled(36, 36, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                item->setIcon(QIcon(thumbnail));
+            }
             item->setData(Qt::UserRole, QVariant::fromValue<quintptr>(reinterpret_cast<quintptr>(l)));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(l->visible ? Qt::Checked : Qt::Unchecked);
@@ -101,6 +105,8 @@ void LayersPanel::refresh() {
 }
 
 void LayersPanel::selectLayer(Layer* layer) {
+    QSignalBlocker blocker(m_list);
+    if (!layer) { m_list->setCurrentItem(nullptr); return; }
     for (int i = 0; i < m_list->count(); ++i) {
         if (layerForItem(m_list->item(i)) == layer) {
             m_list->setCurrentRow(i);

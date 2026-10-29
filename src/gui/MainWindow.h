@@ -1,7 +1,6 @@
 #pragma once
 #include <QMainWindow>
 #include <QUndoStack>
-#include <QDockWidget>
 #include <memory>
 #include "../project/Project.h"
 #include "Canvas.h"
@@ -9,53 +8,61 @@
 #include "PropertiesPanel.h"
 #include "PhotoAdjustmentsPanel.h"
 
+class QLabel;
+class QCloseEvent;
+class QTabWidget;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-
+protected:
+    void closeEvent(QCloseEvent* event) override;
 private slots:
     void onNewProject();
     void onOpenProject();
+    void onOpenImage();
     void onSaveProject();
     void onSaveProjectAs();
     void onImportImage();
     void onExportImage();
-
+    void onCropCanvas();
     void onAddRasterLayer();
     void onAddTextLayer();
     void onAddShapeLayer();
     void onDeleteLayer(Layer* layer);
     void onDuplicateLayer(Layer* layer);
-    void onCopyLayer(Layer* layer);                 // copy "trong" app -> clipboard nội bộ
-    void onPasteLayer();                             // dán từ clipboard nội bộ (layer mới)
-    void onCopyLayerToSystemClipboard();              // copy "ra ngoài" -> clipboard hệ thống (ảnh)
-    void onPasteImageFromSystemClipboard();           // dán ảnh từ clipboard hệ thống (layer mới)
+    void onCopyLayer(Layer* layer);
+    void onPasteLayer();
+    void onCopyLayerToSystemClipboard();
+    void onPasteImageFromSystemClipboard();
     void onMoveLayerUp(Layer* layer);
     void onMoveLayerDown(Layer* layer);
     void onLayerVisibilityToggled(Layer* layer, bool visible);
     void onLayerSelectedInPanel(Layer* layer);
     void onCanvasSelectionChanged(Layer* layer);
-
     void onFlipHorizontal();
     void onFlipVertical();
     void onRotate90(bool clockwise);
     void onResetTransform();
-
 private:
     void buildMenusAndToolbar();
     void refreshTitle();
+    void refreshStatus();
     void syncPanelsFromProject();
-    void updateSelection(Layer* layer); // shows/hides Properties & Adjustments dock + syncs panels
-
+    void updateSelection(Layer* layer);
+    bool confirmDiscardChanges();
+    void loadStarterProject();
     std::unique_ptr<Project> m_project;
     QUndoStack* m_undoStack;
-    std::unique_ptr<Layer> m_layerClipboard; // clipboard nội bộ cho Copy/Paste layer trong app
-
+    std::unique_ptr<Layer> m_layerClipboard;
     Canvas* m_canvas;
     LayersPanel* m_layersPanel;
     PropertiesPanel* m_propertiesPanel;
-    QDockWidget* m_propertiesDock;
     PhotoAdjustmentsPanel* m_photoPanel;
-    QDockWidget* m_photoDock;
+    QTabWidget* m_inspectorTabs;
+    QLabel* m_documentLabel;
+    QLabel* m_statusLabel;
+    QLabel* m_zoomLabel;
+    QString m_documentName;
 };

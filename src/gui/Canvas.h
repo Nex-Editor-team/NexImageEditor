@@ -32,6 +32,7 @@ public:
 
 signals:
     void selectionChanged(Layer* layer);
+    void zoomChanged(double zoom);
     void transformLiveChanged(Layer* layer); // fired continuously while dragging (for Properties panel)
 
 protected:
@@ -66,6 +67,9 @@ private:
     ToolMode m_tool = ToolMode::Select;
     double m_zoom = 1.0;
     QPointF m_panOffset{0, 0};
+    bool m_panning = false;
+    QPointF m_panStart;
+    QPointF m_panStartOffset;
 
     // drag state
     bool m_dragging = false;
