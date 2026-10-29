@@ -1,6 +1,7 @@
 #pragma once
 #include <QUndoCommand>
 #include <QUuid>
+#include <QRect>
 #include <QString>
 #include <memory>
 #include <functional>
@@ -20,9 +21,7 @@ public:
 
     void undo() override;
     void redo() override;
-    int id() const override { return 1001; }
-    // Coalesce consecutive drags of the same layer into one undo step.
-    bool mergeWith(const QUndoCommand* other) override;
+    // Each completed transform is its own undo step.
 
 private:
     Project* m_project;
@@ -105,7 +104,7 @@ public:
     bool mergeWith(const QUndoCommand* other) override {
         if (other->id() != id()) return false;
         const auto* next = static_cast<const SetToneAdjustmentsCommand*>(other);
-        if (next->m_layerId != m_layerId) return false;
+        if (next->m_layerId != m_layerId || next->text() != text()) return false;
         m_after = next->m_after;
         return true;
     }
@@ -125,4 +124,60 @@ private:
     QUuid m_layerId;
     ToneParameters m_before;
     ToneParameters m_after;
+};
+
+// Reordering and canvas cropping are non-destructive and participate in undo.
+class MoveLayerCommand : public QUndoCommand {
+public:
+    MoveLayerCommand(Project* project, int from, int to)
+        : QUndoCommand("Move Layer"), m_project(project), m_from(from), m_to(to) {}
+    void undo() override { m_project->moveLayer(m_to, m_from); }
+    void redo() override { m_project->moveLayer(m_from, m_to); }
+private:
+    Project* m_project;
+    int m_from, m_to;
+};
+
+class CropCanvasCommand : public QUndoCommand {
+public:
+    CropCanvasCommand(Project* project, QRect crop)
+        : QUndoCommand("Crop Canvas"), m_project(project), m_before(project->canvasSize()), m_crop(crop) {}
+    void undo() override { apply(m_before, QPointF(m_crop.x(), m_crop.y())); }
+    void redo() override { apply(m_crop.size(), QPointF(-m_crop.x(), -m_crop.y())); }
+private:
+    void apply(QSize size, QPointF delta) {
+        m_project->setCanvasSize(size);
+        for (const auto& layer : m_project->layers()) layer->transform.center += delta;
+    }
+    Project* m_project;
+    QSize m_before;
+    QRect m_crop;
+};
+
+class BakeAdjustmentsCommand : public QUndoCommand {
+public:
+    BakeAdjustmentsCommand(Project* project, QUuid id, QImage beforeImage,
+                           ToneParameters beforeTone, QImage afterImage)
+        : QUndoCommand("Bake Photo Adjustments"), m_project(project), m_id(id),
+          m_beforeImage(std::move(beforeImage)), m_beforeTone(std::move(beforeTone)),
+          m_afterImage(std::move(afterImage)) {}
+    void undo() override { apply(m_beforeImage, m_beforeTone); }
+    void redo() override { apply(m_afterImage, ToneParameters{}); }
+private:
+    void apply(const QImage& image, const ToneParameters& tone) {
+        for (int i = 0; i < m_project->layerCount(); ++i) {
+            Layer* layer = m_project->layerAt(i);
+            if (layer->id() == m_id) {
+                layer->content = image;
+                layer->adjustments = tone;
+                layer->applyAdjustments();
+                return;
+            }
+        }
+    }
+    Project* m_project;
+    QUuid m_id;
+    QImage m_beforeImage;
+    ToneParameters m_beforeTone;
+    QImage m_afterImage;
 };

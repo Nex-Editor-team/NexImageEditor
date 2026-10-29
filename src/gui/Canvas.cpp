@@ -35,11 +35,13 @@ void Canvas::setSelectedLayer(Layer* layer) {
 
 void Canvas::setTool(ToolMode mode) {
     m_tool = mode;
+    setCursor(mode == ToolMode::Pan ? Qt::OpenHandCursor : Qt::ArrowCursor);
     update();
 }
 
 void Canvas::setZoom(double zoom) {
     m_zoom = std::clamp(zoom, 0.02, 40.0);
+    emit zoomChanged(m_zoom);
     update();
 }
 
@@ -51,6 +53,8 @@ void Canvas::zoomToFit() {
     double zy = (height() - 40) / double(cs.height());
     m_zoom = std::clamp(std::min(zx, zy), 0.02, 40.0);
     m_panOffset = {0, 0};
+    emit zoomChanged(m_zoom);
+    update();
 }
 
 // ---------------- coordinate mapping ----------------
@@ -79,10 +83,18 @@ void Canvas::drawCheckerboard(QPainter& painter) const {
     const int cell = 12;
     painter.save();
     painter.setClipRect(r);
-    for (int y = int(r.top()); y < int(r.bottom()) + cell; y += cell) {
-        for (int x = int(r.left()); x < int(r.right()) + cell; x += cell) {
-            bool dark = ((x / cell) + (y / cell)) % 2 == 0;
-            painter.fillRect(QRectF(x, y, cell, cell), dark ? QColor(210, 210, 210) : QColor(240, 240, 240));
+    // Only paint cells visible in the widget; the canvas can be very large
+    // when zoomed in, and iterating over its full bounds would freeze the UI.
+    const QRectF visible = r.intersected(QRectF(rect()));
+    const int startX = int(std::floor((visible.left() - r.left()) / cell));
+    const int endX = int(std::ceil((visible.right() - r.left()) / cell));
+    const int startY = int(std::floor((visible.top() - r.top()) / cell));
+    const int endY = int(std::ceil((visible.bottom() - r.top()) / cell));
+    if (!visible.isEmpty()) for (int y = startY; y < endY; ++y) {
+        for (int x = startX; x < endX; ++x) {
+            bool dark = (x + y) % 2 == 0;
+            painter.fillRect(QRectF(r.left() + x * cell, r.top() + y * cell, cell, cell),
+                             dark ? QColor(210, 210, 210) : QColor(240, 240, 240));
         }
     }
     painter.restore();
@@ -92,7 +104,7 @@ void Canvas::drawCheckerboard(QPainter& painter) const {
 
 void Canvas::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(50, 50, 54));
+    painter.fillRect(rect(), QColor(31, 32, 34));
     if (!m_project) return;
 
     drawCheckerboard(painter);
@@ -216,7 +228,13 @@ Layer* Canvas::hitTestLayer(const QPointF& canvasPos) const {
 void Canvas::mousePressEvent(QMouseEvent* event) {
     if (!m_project || event->button() != Qt::LeftButton) return;
 
-    if (m_tool == ToolMode::Pan) return; // panning handled by drag delta below via generic path
+    if (m_tool == ToolMode::Pan) {
+        m_panning = true;
+        m_panStart = event->position();
+        m_panStartOffset = m_panOffset;
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
 
     Transform::TransformHandle handle = Transform::TransformHandle::None;
     if (m_selected && (m_tool == ToolMode::Select || m_tool == ToolMode::FreeTransform))
@@ -234,6 +252,11 @@ void Canvas::mousePressEvent(QMouseEvent* event) {
 }
 
 void Canvas::mouseMoveEvent(QMouseEvent* event) {
+    if (m_panning) {
+        m_panOffset = m_panStartOffset + event->position() - m_panStart;
+        update();
+        return;
+    }
     if (m_dragging) {
         updateDrag(event->position(), event->modifiers());
         return;
@@ -243,6 +266,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* event) {
 
 void Canvas::mouseReleaseEvent(QMouseEvent* event) {
     Q_UNUSED(event);
+    if (m_panning) { m_panning = false; setCursor(Qt::OpenHandCursor); }
     if (m_dragging) endDrag();
 }
 
